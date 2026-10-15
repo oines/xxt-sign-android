@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+  <style>
+    html, body { margin: 0; padding: 0; background: #ffffff; font-family: sans-serif; }
+    #tip { padding: 14px; color: #666; font-size: 14px; line-height: 1.5; }
+    #cap { min-height: 300px; }
+  </style>
+</head>
+<body>
+<div id="tip">正在加载验证码…</div>
+<div id="cap"></div>
+
+<!-- jQuery + 验证码 SDK，由 App 端下载后按顺序内联到这里。
+     注意顺序：SDK 依赖 jQuery，必须先于它执行。 -->
+<!--LIB-->
+
+<script>
+  var cfg = __CONFIG__;
+
+  function setTip(t) {
+    var el = document.getElementById('tip');
+    if (el) el.textContent = t || '';
+  }
+
+  function emit(v) {
+    try { if (window.XxtCaptcha) window.XxtCaptcha.onVerify(v); } catch (e) {}
+  }
+
+  function reportErr(msg) {
+    try { if (window.XxtCaptcha) window.XxtCaptcha.onError(String(msg)); } catch (e) {}
+  }
+
+  var booted = false;
+
+  function boot() {
+    if (booted) return false;
+    if (typeof initCXCaptcha !== 'function') return false;
+    booted = true;
+    setTip(cfg.tip || '');
+    try {
+      initCXCaptcha({
+        captchaId: cfg.captchaId,
+        element: '#cap',
+        mode: 'popup',
+        language: 'CN',
+        type: cfg.type || 'slide',
+        onVerify: function (err, data) {
+          if (err) return;
+          var v = (data && data.validate) ? data.validate : '';
+          if (v) emit(v);
+        }
+      }, function (instance) {
+        window.__capInstance = instance;
+        try { if (instance && instance.popUp) instance.popUp(); } catch (e) {}
+      }, function (e) {
+        setTip('验证码初始化失败');
+        reportErr(e);
+      });
+      return true;
+    } catch (e) {
+      setTip('验证码初始化异常：' + e);
+      reportErr(e);
+      return false;
+    }
+  }
+
+  var waited = 0;
+  (function wait() {
+    if (boot()) return;
+    waited += 200;
+    if (waited > 20000) {
+      setTip('验证码组件加载超时');
+      reportErr('sdk-load-timeout');
+      return;
+    }
+    setTimeout(wait, 200);
+  })();
+</script>
+</body>
+</html>

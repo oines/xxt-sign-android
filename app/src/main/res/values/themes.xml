@@ -1,0 +1,10 @@
+<resources xmlns:tools="http://schemas.android.com/tools">
+    <style name="Theme.XXTSign" parent="Theme.Material3.DayNight.NoActionBar">
+        <item name="colorPrimary">@color/primary</item>
+        <item name="colorPrimaryDark">@color/primary_dark</item>
+        <item name="colorSecondary">@color/accent</item>
+        <item name="android:statusBarColor" tools:targetApi="l">@color/primary_dark</item>
+    </style>
+
+    <style name="Theme.XXTSign.Dialog" parent="Theme.Material3.DayNight.Dialog.Alert" />
+</resources>

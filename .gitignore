@@ -1,0 +1,13 @@
+*.iml
+.gradle/
+.tools/
+build/
+local.properties
+.idea/
+.DS_Store
+captures/
+.externalNativeBuild/
+.cxx/
+
+# Kotlin 编译诊断日志
+.kotlin/

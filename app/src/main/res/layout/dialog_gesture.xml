@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="vertical"
+    android:padding="20dp">
+
+    <TextView
+        android:id="@+id/tvGestureHint"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:textSize="13sp"
+        android:textColor="@color/muted"
+        android:text="按教室屏幕上显示的手势，在下面 3×3 点阵上画一遍。\n从哪个点起笔、经过哪些点，顺序要和屏幕一致。" />
+
+    <com.xxt.sign.ui.GestureLockView
+        android:id="@+id/gestureLock"
+        android:layout_width="260dp"
+        android:layout_height="260dp"
+        android:layout_gravity="center_horizontal"
+        android:layout_marginTop="12dp" />
+
+    <TextView
+        android:id="@+id/tvGestureCode"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:gravity="center"
+        android:textSize="15sp"
+        android:textStyle="bold"
+        android:text="尚未绘制" />
+
+    <com.google.android.material.button.MaterialButton
+        android:id="@+id/btnGestureReset"
+        style="@style/Widget.Material3.Button.TextButton"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="center_horizontal"
+        android:text="重画" />
+</LinearLayout>

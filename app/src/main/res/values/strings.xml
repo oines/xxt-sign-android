@@ -1,0 +1,20 @@
+<resources>
+    <string name="app_name">学习通签到助手</string>
+
+    <string name="tab_accounts">账号</string>
+    <string name="tab_sign">签到</string>
+    <string name="tab_log">日志</string>
+
+    <string name="add_account">添加账号</string>
+    <string name="phone">手机号 / 用户名</string>
+    <string name="password">密码</string>
+    <string name="ok">确定</string>
+    <string name="cancel">取消</string>
+
+    <string name="sign_all">一键签到 / 签退</string>
+    <string name="sign_scan">扫码签到</string>
+    <string name="sign_code">签到码签到</string>
+    <string name="sign_location">位置设置</string>
+    <string name="sign_photo">拍照签到图片</string>
+    <string name="auto_monitor">后台巡检（自动签能签的，其余提醒）</string>
+</resources>
