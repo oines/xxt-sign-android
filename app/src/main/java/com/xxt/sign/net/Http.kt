@@ -11,12 +11,29 @@ import java.net.URLEncoder
 import java.util.concurrent.TimeUnit
 
 object Http {
-    /** 模仿学习通 Android 客户端 UA，部分接口（taskactivelist）会校验 */
-    const val UA =
-        "Mozilla/5.0 (Linux; Android 13; Pixel 5 Build/TQ3A.230901.001) AppleWebKit/537.36 " +
+
+    /**
+     * 模仿学习通 Android 客户端的 UA。
+     *
+     * 其中 `(schild:xxx)` 是 **UA 里唯一表明设备身份的东西**，必须每个账号不同——
+     * 所有账号共用同一个 schild，等于直接告诉服务端这些账号来自同一台设备。
+     *
+     * `(device:xxx)` 是机型，同样按账号区分。
+     * 其余部分（系统版本、Chrome 版本、App 版本）保持一致即可。
+     */
+    private const val UA_TEMPLATE =
+        "Mozilla/5.0 (Linux; Android 13; %MODEL% Build/TQ3A.230901.001) AppleWebKit/537.36 " +
             "(KHTML, like Gecko) Version/4.0 Chrome/120.0.0.0 Mobile Safari/537.36 " +
-            "(schild:1) (device:Pixel 5) Language/zh_CN " +
+            "(schild:%SCHILD%) (device:%MODEL%) Language/zh_CN " +
             "com.ssreader.ChaoXingStudy/ChaoXingStudy_3_6_2_android_phone_20230101"
+
+    /** 默认 UA（无账号上下文时用，例如公开的验证码接口） */
+    val UA: String get() = buildUa("Pixel 5", "1")
+
+    fun buildUa(model: String, schild: String): String =
+        UA_TEMPLATE
+            .replace("%MODEL%", model.ifBlank { "Pixel 5" })
+            .replace("%SCHILD%", schild.ifBlank { "1" })
 
     val FORM = "application/x-www-form-urlencoded; charset=UTF-8".toMediaType()
 
@@ -28,7 +45,18 @@ object Http {
         .retryOnConnectionFailure(true)
         .build()
 
-    fun withJar(jar: CookieJar): OkHttpClient = base.newBuilder().cookieJar(jar).build()
+    /**
+     * 带 Cookie 与**该账号专属 UA** 的客户端。
+     * 用拦截器统一注入 UA，这样包括图片下载、multipart 上传在内的所有请求都带上。
+     */
+    fun withJar(jar: CookieJar, ua: String = UA): OkHttpClient = base.newBuilder()
+        .cookieJar(jar)
+        .addInterceptor { chain ->
+            chain.proceed(
+                chain.request().newBuilder().header("User-Agent", ua).build()
+            )
+        }
+        .build()
 }
 
 fun enc(s: String): String = URLEncoder.encode(s, "UTF-8")
@@ -38,6 +66,7 @@ fun dec(s: String): String = runCatching { URLDecoder.decode(s, "UTF-8") }.getOr
 data class Resp(val code: Int, val body: String, val headers: Headers, val rawBytes: ByteArray = ByteArray(0)) {
     val ok: Boolean get() = code in 200..399
 
+    // ByteArray 参与 equals 会让 data class 语义变味，这里按引用比较
     override fun equals(other: Any?): Boolean = this === other
     override fun hashCode(): Int = System.identityHashCode(this)
 }

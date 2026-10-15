@@ -5,6 +5,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.MultipartBody
+import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
@@ -53,7 +54,10 @@ class SignOptions(
  */
 class CxApi(private val s: CxSession) {
 
-    private val c by lazy { Http.withJar(s.jar) }
+    /** 直接用该账号自己的客户端，保证 UA / Cookie 都一致 */
+    val client: OkHttpClient get() = s.client
+
+    private val c: OkHttpClient get() = s.client
 
     // ---------------------------------------------------------------- 课程
 
@@ -184,17 +188,18 @@ class CxApi(private val s: CxSession) {
             if (!rc.isNullOrBlank()) url += "&rcode=" + enc(rc)
 
             val html = c.get(url).body
-            delay(400)
+            com.xxt.sign.core.Jitter.betweenRequests()
 
             // 位置签到必备的两步 analysis
             runCatching {
                 val a1 = c.get("https://mobilelearn.chaoxing.com/pptSign/analysis?vs=1&DB_STRATEGY=RANDOM&aid=$aid").body
                 val code = Regex("code='\\+'(.*?)'").find(a1)?.groupValues?.getOrNull(1)
                 if (!code.isNullOrBlank()) {
+                    com.xxt.sign.core.Jitter.betweenRequests()
                     c.get("https://mobilelearn.chaoxing.com/pptSign/analysis2?DB_STRATEGY=RANDOM&code=$code")
                 }
             }
-            delay(300)
+            com.xxt.sign.core.Jitter.betweenRequests()
 
             Regex("id=\"statuscontent\"[^>]*>(.*?)</", RegexOption.DOT_MATCHES_ALL)
                 .find(html)?.groupValues?.getOrNull(1)
@@ -293,7 +298,7 @@ class CxApi(private val s: CxSession) {
                     ?: return SignOutcome.Blocked("拿不到签到码，请手动输入")
                 val err = checkSignCode(aid, code)
                 if (err != null) return SignOutcome.Blocked("签到码校验失败：$err")
-                delay(200)
+                com.xxt.sign.core.Jitter.betweenRequests()
                 stuSign(
                     baseParams(detail, opt.validate).apply {
                         add("signCode" to code)

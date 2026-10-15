@@ -4,6 +4,7 @@ import com.xxt.sign.core.Account
 import com.xxt.sign.core.LogStore
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import okhttp3.OkHttpClient
 import org.json.JSONObject
 
 /**
@@ -15,7 +16,15 @@ import org.json.JSONObject
 class CxSession(val account: Account) {
 
     val jar = CxCookieJar().apply { restore(account.cookies) }
-    private val client = Http.withJar(jar)
+
+    /** 这个账号专属的 UA（含自己的 schild 与机型） */
+    val userAgent: String = Http.buildUa(
+        account.deviceModel.ifBlank { "Pixel 5" },
+        account.schild.ifBlank { "1" }
+    )
+
+    /** 该账号的 HTTP 客户端：带自己的 Cookie 与 UA */
+    val client: OkHttpClient = Http.withJar(jar, userAgent)
 
     var uid: String = account.uid
         private set

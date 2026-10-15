@@ -192,12 +192,7 @@ object SignPlanner {
             emit(o)
 
             // 账号间隔，避免同一秒齐刷刷提交
-            if (i < targets.size - 1) {
-                val jitter = com.xxt.sign.core.Settings.jitterSeconds
-                if (jitter > 0) kotlinx.coroutines.delay(
-                    java.util.Random().nextLong(500, jitter * 1000L + 1)
-                )
-            }
+            if (i < targets.size - 1) com.xxt.sign.core.Jitter.betweenAccounts()
         }
         return results
     }

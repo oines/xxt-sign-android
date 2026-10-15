@@ -37,8 +37,7 @@ class SignRunner(
             all.addAll(rs)
 
             if (idx < accounts.size - 1 && accounts.size > 1) {
-                val jitter = com.xxt.sign.core.Settings.jitterSeconds
-                if (jitter > 0) kotlinx.coroutines.delay(rnd.nextLong(800, jitter * 1000L + 1))
+                com.xxt.sign.core.Jitter.betweenAccounts()
             }
         }
         return all
@@ -85,9 +84,15 @@ class SignRunner(
         }
 
         onProgress("${acc.display}：发现 ${targeted.size} 个活动，逐个签")
-        return targeted.map {
-            SignFlow.signWithCaptcha(acc, api, it, opt, onProgress, askHuman, autoSolveCaptcha)
+        // 逐个签，中间插入拟人停顿；不要背靠背连着发
+        val out = mutableListOf<SignEngine.Outcome>()
+        targeted.forEachIndexed { i, act ->
+            if (i > 0) com.xxt.sign.core.Jitter.betweenActivities()
+            out.add(
+                SignFlow.signWithCaptcha(acc, api, act, opt, onProgress, askHuman, autoSolveCaptcha)
+            )
         }
+        return out
     }
 
     private fun fail(acc: Account, msg: String) =

@@ -45,7 +45,7 @@ object SignFlow {
         if (autoSolve) {
             onProgress("${acc.display} 触发人机验证，正在自动解…")
             val solved = CxCaptcha.solve(
-                client = Http.base,
+                client = api.client,
                 captchaId = CxCaptcha.CAPTCHA_ID_SIGN,
                 referer = referer
             )

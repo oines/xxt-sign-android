@@ -87,6 +87,8 @@ object SignEngine {
         coroutineScope {
             courses.map { course ->
                 async(Dispatchers.IO) {
+                    // 错峰启动：不要正好 4 个一批地发出去
+                    com.xxt.sign.core.Jitter.staggerStart()
                     sem.withPermit {
                         runCatching {
                             api.activeList(course.courseId, course.classId).forEach { act ->

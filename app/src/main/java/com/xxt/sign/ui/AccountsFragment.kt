@@ -158,7 +158,10 @@ class AccountsFragment : Fragment() {
                     1 -> Account.AUTH_SMS
                     2 -> Account.AUTH_WEB
                     else -> Account.AUTH_PWD
-                }
+                },
+                // 每个账号一套设备标识，避免所有账号在服务端看起来来自同一台设备
+                schild = Account.newSchild(),
+                deviceModel = Account.newDeviceModel()
             )
             AccountStore.upsert(acc)
             dialog.dismiss()
@@ -190,8 +193,14 @@ class AccountsFragment : Fragment() {
                 d.btnSendCode.isEnabled = false
                 d.btnSendCode.text = "发送中…"
                 viewLifecycleOwner.lifecycleScope.launch {
-                    val err = CxSession(Account(phone = phone, authType = Account.AUTH_SMS))
-                        .sendSmsCode(validate)
+                    val err = CxSession(
+                        Account(
+                            phone = phone,
+                            authType = Account.AUTH_SMS,
+                            schild = Account.newSchild(),
+                            deviceModel = Account.newDeviceModel()
+                        )
+                    ).sendSmsCode(validate)
 
                     if (err.startsWith("需要人机验证")) {
                         d.btnSendCode.text = "需人机验证"

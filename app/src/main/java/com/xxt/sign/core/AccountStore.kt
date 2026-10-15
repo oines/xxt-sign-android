@@ -23,7 +23,7 @@ object AccountStore {
     fun init(c: Context) {
         sp = c.getSharedPreferences("xxt_prefs", Context.MODE_PRIVATE)
         val raw = sp.getString(KEY_ACCOUNTS, "[]") ?: "[]"
-        _accounts.value = try {
+        val loaded = try {
             val arr = JSONArray(raw)
             (0 until arr.length()).map { Account.from(arr.getJSONObject(it)) }
         } catch (e: Exception) {
@@ -37,7 +37,25 @@ object AccountStore {
             )
             emptyList()
         }
+        _accounts.value = loaded
+
+        // Account.from() 会给缺字段的老账号补出 schild / deviceModel，
+        // 但那是内存里的值——必须立刻回写，否则每次启动都重新生成一个新设备标识，
+        // 反而变成“同一账号天天换设备”。
+        if (loaded.isNotEmpty() && needsUpgrade(raw)) {
+            persist(loaded)
+            LogStore.add("[存储] 已为 ${loaded.size} 个账号补全设备标识", true)
+        }
     }
+
+    /** 存盘数据里是否有账号缺 schild / deviceModel */
+    private fun needsUpgrade(raw: String): Boolean = runCatching {
+        val arr = JSONArray(raw)
+        (0 until arr.length()).any {
+            val o = arr.getJSONObject(it)
+            o.optString("schild").isBlank() || o.optString("deviceModel").isBlank()
+        }
+    }.getOrDefault(false)
 
     /** 是否存在读档失败备份（可在界面提示用户） */
     fun hasCorruptBackup(): Boolean =
