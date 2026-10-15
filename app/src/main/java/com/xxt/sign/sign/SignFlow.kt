@@ -24,8 +24,10 @@ object SignFlow {
     /**
      * 签掉一个活动。
      *
-     * @param askHuman 自动解失败时的人工兜底，返回 validate；返回 null 表示放弃
-     * @param autoSolve 是否先尝试自动解（巡检无界面场景可关掉）
+     * 服务端要求人机验证时，**直接转人工**（不再做自动解）。
+     * 人工界面用的是 [com.xxt.sign.ui.CaptchaActivity]，与短信登录同一套，已验证可用。
+     *
+     * @param askHuman 弹人机验证，返回 validate；返回 null 表示放弃
      */
     suspend fun signWithCaptcha(
         acc: Account,
@@ -33,37 +35,14 @@ object SignFlow {
         act: SignEngine.ActiveActivity,
         opt: SignOptions,
         onProgress: (String) -> Unit = {},
-        askHuman: suspend (CaptchaPrompt) -> String? = { null },
-        autoSolve: Boolean = true
+        askHuman: suspend (CaptchaPrompt) -> String? = { null }
     ): SignEngine.Outcome {
         var r = SignEngine.signOneActivity(acc, api, act, opt)
         if (r.status != SignEngine.SignStatus.NEED_CAPTCHA) return r
 
-        val referer = preSignReferer(act)
-        var autoReason = "未尝试"
-
-        if (autoSolve) {
-            onProgress("${acc.display} 触发人机验证，正在自动解…")
-            val solved = CxCaptcha.solve(
-                client = api.client,
-                captchaId = CxCaptcha.CAPTCHA_ID_SIGN,
-                referer = referer
-            )
-            if (solved.ok) {
-                r = SignEngine.signOneActivity(acc, api, act, opt, solved.validate)
-                if (r.status != SignEngine.SignStatus.NEED_CAPTCHA) {
-                    return r.copy(detail = r.detail + "（验证码自动通过）")
-                }
-                autoReason = "自动通过后服务端仍要求验证"
-            } else {
-                autoReason = solved.error ?: "自动未通过"
-            }
-            LogStore.add("[验证码] 自动解结果：${if (solved.ok) "通过" else autoReason}", solved.ok)
-        }
-
-        onProgress("${acc.display} 等待人工过验证码（$autoReason）")
+        onProgress("${acc.display} 碰到人机验证，请手动过一下")
         val validate = askHuman(
-            CaptchaPrompt(acc.id, acc.display, act.title, act.aid, autoReason)
+            CaptchaPrompt(acc.id, acc.display, act.title, act.aid, "需要人工验证")
         )
         if (validate.isNullOrBlank()) {
             return SignEngine.Outcome(
@@ -71,7 +50,7 @@ object SignFlow {
                 SignEngine.SignStatus.FAILED
             )
         }
-        onProgress("${acc.display} 人工验证通过，继续签到…")
+        onProgress("${acc.display} 验证通过，继续签到…")
         r = SignEngine.signOneActivity(acc, api, act, opt, validate)
         return r.copy(detail = r.detail + "（人工通过验证码）")
     }

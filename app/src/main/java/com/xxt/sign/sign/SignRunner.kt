@@ -18,7 +18,6 @@ class SignRunner(
     private val onProgress: (String) -> Unit = {},
     private val onResult: (SignEngine.Outcome) -> Unit = {},
     private val askHuman: suspend (SignFlow.CaptchaPrompt) -> String? = { null },
-    private val autoSolveCaptcha: Boolean = true,
     private val quiet: Boolean = false
 ) {
 
@@ -54,7 +53,7 @@ class SignRunner(
             val act = runCatching { SignEngine.activityByAid(api, opt.aid!!) }
                 .getOrElse { return listOf(fail(acc, "拉取活动失败：${it.message}")) }
             return listOf(
-                SignFlow.signWithCaptcha(acc, api, act, opt, onProgress, askHuman, autoSolveCaptcha)
+                SignFlow.signWithCaptcha(acc, api, act, opt, onProgress, askHuman)
             )
         }
 
@@ -89,7 +88,7 @@ class SignRunner(
         targeted.forEachIndexed { i, act ->
             if (i > 0) com.xxt.sign.core.Jitter.betweenActivities()
             out.add(
-                SignFlow.signWithCaptcha(acc, api, act, opt, onProgress, askHuman, autoSolveCaptcha)
+                SignFlow.signWithCaptcha(acc, api, act, opt, onProgress, askHuman)
             )
         }
         return out

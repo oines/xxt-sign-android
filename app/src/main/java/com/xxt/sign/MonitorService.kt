@@ -108,8 +108,7 @@ class MonitorService : Service() {
                     target = d,
                     accounts = accounts,
                     signCode = d.serverSignCode.takeIf { it.isNotBlank() },
-                    photoBytes = photoBytes(),
-                    autoSolve = true
+                    photoBytes = photoBytes()
                 )
                 val ok = rs.count { it.ok }
                 handled[d.aid] = System.currentTimeMillis()

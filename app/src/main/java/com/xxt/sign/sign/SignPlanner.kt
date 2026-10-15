@@ -145,8 +145,7 @@ object SignPlanner {
         photoBytes: ByteArray? = null,
         onProgress: (String) -> Unit = {},
         onResult: (SignEngine.Outcome) -> Unit = {},
-        askHuman: suspend (SignFlow.CaptchaPrompt) -> String? = { null },
-        autoSolve: Boolean = true
+        askHuman: suspend (SignFlow.CaptchaPrompt) -> String? = { null }
     ): List<SignEngine.Outcome> {
         val targets = accounts.filter { it.id in target.accountIds }
         val results = mutableListOf<SignEngine.Outcome>()
@@ -187,7 +186,7 @@ object SignPlanner {
             )
 
             val o = runCatching {
-                SignFlow.signWithCaptcha(acc, api, act, opt, onProgress, askHuman, autoSolve)
+                SignFlow.signWithCaptcha(acc, api, act, opt, onProgress, askHuman)
             }.getOrElse { fail(acc, target, "异常：${it.message ?: it.javaClass.simpleName}") }
             emit(o)
 
