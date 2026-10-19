@@ -1,0 +1,34 @@
+XXTSign
+Copyright (C) 2026 XXTSign contributors
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+---------------------------------------------------------------------------
+
+The video task ("刷课") protocol implementation in this project is derived
+from the following GPL-3.0 project:
+
+  Samueli924/chaoxing
+  https://github.com/Samueli924/chaoxing
+
+Only the video watching / progress reporting part was ported. Question
+answering, quiz, exam, document, reading, live and learning-count features
+of the original project are not included.
+
+Third-party components keep their own licenses:
+
+  - AndroidX / Material Components (Apache-2.0)
+  - OkHttp (Apache-2.0)
+  - jsoup (MIT)
+  - zxing-android-embedded (Apache-2.0)

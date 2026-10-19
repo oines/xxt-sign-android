@@ -26,6 +26,12 @@ class CxSession(val account: Account) {
     /** 该账号的 HTTP 客户端：带自己的 Cookie 与 UA */
     val client: OkHttpClient = Http.withJar(jar, userAgent)
 
+    /**
+     * 刷课用的桌面 UA 客户端：与 [client] 共享同一个 CookieJar，
+     * 但请求 mooc1 / mooc2-ans 的网页接口时用 PC 浏览器身份。
+     */
+    val pcClient: OkHttpClient = Http.withJar(jar, Http.DESKTOP_UA, Http.PC_HEADERS)
+
     var uid: String = account.uid
         private set
     var realName: String = account.name

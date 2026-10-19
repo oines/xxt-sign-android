@@ -1,8 +1,9 @@
 <resources>
-    <string name="app_name">学习通签到助手</string>
+    <string name="app_name">学习通助手</string>
 
     <string name="tab_accounts">账号</string>
     <string name="tab_sign">签到</string>
+    <string name="tab_study">刷课</string>
     <string name="tab_log">日志</string>
 
     <string name="add_account">添加账号</string>

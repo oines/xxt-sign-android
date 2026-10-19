@@ -9,13 +9,16 @@ import com.xxt.sign.databinding.ItemAccountBinding
 
 class AccountAdapter(
     private val onRelogin: (Account) -> Unit,
-    private val onDelete: (Account) -> Unit
+    private val onDelete: (Account) -> Unit,
+    private val onStudySelect: (Account) -> Unit
 ) : RecyclerView.Adapter<AccountAdapter.VH>() {
 
     private var data: List<Account> = emptyList()
+    private var studySelectedId: String = ""
 
-    fun submit(list: List<Account>) {
+    fun submit(list: List<Account>, selectedStudyId: String = studySelectedId) {
         data = list
+        studySelectedId = selectedStudyId
         notifyDataSetChanged()
     }
 
@@ -37,6 +40,10 @@ class AccountAdapter(
             b.tvDetail.text = sb.toString()
             b.btnRelogin.setOnClickListener { onRelogin(a) }
             b.btnDelete.setOnClickListener { onDelete(a) }
+
+            b.rbStudy.setOnCheckedChangeListener(null)
+            b.rbStudy.isChecked = a.id == studySelectedId
+            b.rbStudy.setOnClickListener { onStudySelect(a) }
         }
     }
 }

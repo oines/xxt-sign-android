@@ -30,6 +30,21 @@ object Http {
     /** 默认 UA（无账号上下文时用，例如公开的验证码接口） */
     val UA: String get() = buildUa("Pixel 5", "1")
 
+    /**
+     * 刷课（mooc1 / mooc2-ans 网页接口）使用的桌面浏览器 UA。
+     * 这些接口返回的是 PC 网页，Android UA 容易拿到不一样的页面结构。
+     */
+    const val DESKTOP_UA =
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
+            "(KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36"
+
+    /** 与桌面 UA 配套的 client hints，尽量贴近官方网页请求 */
+    val PC_HEADERS: Map<String, String> = mapOf(
+        "sec-ch-ua" to "\"Chromium\";v=\"129\", \"Google Chrome\";v=\"129\", \"Not=A?Brand\";v=\"99\"",
+        "sec-ch-ua-mobile" to "?0",
+        "sec-ch-ua-platform" to "\"Windows\""
+    )
+
     fun buildUa(model: String, schild: String): String =
         UA_TEMPLATE
             .replace("%MODEL%", model.ifBlank { "Pixel 5" })
@@ -49,12 +64,16 @@ object Http {
      * 带 Cookie 与**该账号专属 UA** 的客户端。
      * 用拦截器统一注入 UA，这样包括图片下载、multipart 上传在内的所有请求都带上。
      */
-    fun withJar(jar: CookieJar, ua: String = UA): OkHttpClient = base.newBuilder()
+    fun withJar(
+        jar: CookieJar,
+        ua: String = UA,
+        extraHeaders: Map<String, String> = emptyMap()
+    ): OkHttpClient = base.newBuilder()
         .cookieJar(jar)
         .addInterceptor { chain ->
-            chain.proceed(
-                chain.request().newBuilder().header("User-Agent", ua).build()
-            )
+            val builder = chain.request().newBuilder().header("User-Agent", ua)
+            extraHeaders.forEach { (k, v) -> builder.header(k, v) }
+            chain.proceed(builder.build())
         }
         .build()
 }

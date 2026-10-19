@@ -7,6 +7,7 @@ import com.xxt.sign.databinding.ActivityMainBinding
 import com.xxt.sign.ui.AccountsFragment
 import com.xxt.sign.ui.LogFragment
 import com.xxt.sign.ui.SignFragment
+import com.xxt.sign.ui.StudyFragment
 
 class MainActivity : AppCompatActivity() {
 
@@ -32,6 +33,7 @@ class MainActivity : AppCompatActivity() {
         val tag = when (itemId) {
             R.id.nav_accounts -> TAG_ACCOUNTS
             R.id.nav_sign -> TAG_SIGN
+            R.id.nav_study -> TAG_STUDY
             R.id.nav_log -> TAG_LOG
             else -> return
         }
@@ -39,6 +41,7 @@ class MainActivity : AppCompatActivity() {
         binding.toolbar.title = when (itemId) {
             R.id.nav_accounts -> getString(R.string.tab_accounts)
             R.id.nav_sign -> getString(R.string.tab_sign)
+            R.id.nav_study -> getString(R.string.tab_study)
             else -> getString(R.string.tab_log)
         }
 
@@ -46,6 +49,7 @@ class MainActivity : AppCompatActivity() {
         val target: Fragment = fm.findFragmentByTag(tag) ?: when (itemId) {
             R.id.nav_accounts -> AccountsFragment()
             R.id.nav_sign -> SignFragment()
+            R.id.nav_study -> StudyFragment()
             else -> LogFragment()
         }
 
@@ -61,7 +65,8 @@ class MainActivity : AppCompatActivity() {
     companion object {
         private const val TAG_ACCOUNTS = "tab_accounts"
         private const val TAG_SIGN = "tab_sign"
+        private const val TAG_STUDY = "tab_study"
         private const val TAG_LOG = "tab_log"
-        private val ALL_TAGS = listOf(TAG_ACCOUNTS, TAG_SIGN, TAG_LOG)
+        private val ALL_TAGS = listOf(TAG_ACCOUNTS, TAG_SIGN, TAG_STUDY, TAG_LOG)
     }
 }

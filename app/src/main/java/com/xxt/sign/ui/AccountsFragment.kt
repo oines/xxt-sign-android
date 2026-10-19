@@ -15,6 +15,7 @@ import com.xxt.sign.R
 import com.xxt.sign.core.Account
 import com.xxt.sign.core.AccountStore
 import com.xxt.sign.core.LogStore
+import com.xxt.sign.core.Settings
 import com.xxt.sign.databinding.DialogAccountBinding
 import com.xxt.sign.databinding.FragmentAccountsBinding
 import com.xxt.sign.net.CxSession
@@ -65,9 +66,17 @@ class AccountsFragment : Fragment() {
                 MaterialAlertDialogBuilder(requireContext())
                     .setTitle("删除账号")
                     .setMessage("确定删除 ${acc.display} 吗？")
-                    .setPositiveButton("删除") { _, _ -> AccountStore.remove(acc.id) }
+                    .setPositiveButton("删除") { _, _ ->
+                        if (Settings.studyAccountId == acc.id) Settings.studyAccountId = ""
+                        AccountStore.remove(acc.id)
+                    }
                     .setNegativeButton("取消", null)
                     .show()
+            },
+            onStudySelect = { acc ->
+                Settings.studyAccountId = acc.id
+                (b.recycler.adapter as? AccountAdapter)?.submit(AccountStore.accounts.value, acc.id)
+                toast("已选择 ${acc.display} 用于刷课")
             }
         )
     }
@@ -93,7 +102,7 @@ class AccountsFragment : Fragment() {
 
         viewLifecycleOwner.lifecycleScope.launch {
             AccountStore.accounts.collect { list ->
-                adapter.submit(list)
+                adapter.submit(list, Settings.studyAccountId)
                 b.tvCount.text = "共 ${list.size} 个账号"
                 b.tvEmpty.visibility = if (list.isEmpty()) View.VISIBLE else View.GONE
                 b.recycler.visibility = if (list.isEmpty()) View.GONE else View.VISIBLE

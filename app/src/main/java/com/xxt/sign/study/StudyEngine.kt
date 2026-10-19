@@ -1,0 +1,356 @@
+package com.xxt.sign.study
+
+import com.xxt.sign.core.LogStore
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
+import java.util.concurrent.atomic.AtomicInteger
+import kotlin.math.min
+import kotlin.random.Random
+
+/**
+ * 只做「看视频」：拉章节 → 取视频任务点 → 按倍速/并发上报进度。
+ * 逻辑与参考实现保持一致：章节最多重试 5 次、首次 isdrag=4 尝试秒过、
+ * 每 30–90 秒上报一次、403 时刷新状态 + 重新登录。
+ */
+class StudyEngine(
+    private val api: StudyApi,
+    private val plan: StudyPlan,
+    private val onState: (StudyState) -> Unit,
+    private val onTask: (StudyTaskItem) -> Unit
+) {
+    private val done = AtomicInteger(0)
+    private val failed = AtomicInteger(0)
+    private var total = 0
+
+    private enum class ChapterOutcome { DONE, NOT_OPEN, ERROR }
+
+    suspend fun run(): StudySummary {
+        val targets = mutableListOf<Pair<StudyCourse, StudyChapter>>()
+
+        for (course in plan.courses) {
+            onState(StudyState(running = true, status = "读取章节：${course.title}"))
+            val chapters = try {
+                api.getChapters(course)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                LogStore.add("[刷课] ${course.title} 读取章节失败：${e.message}", false)
+                continue
+            }
+            val selected = plan.chapterSelection[course.key].orEmpty()
+            val pending = chapters.filter { it.id in selected && !it.finished }
+            LogStore.add(
+                "[刷课] ${course.title}：选中 ${selected.size} 章，待刷 ${pending.size} 章",
+                pending.isNotEmpty()
+            )
+            targets += pending.map { course to it }
+        }
+
+        total = targets.size
+        onState(
+            StudyState(
+                running = true,
+                status = if (total == 0) "没有待刷章节" else "共 $total 个待刷章节",
+                totalChapters = total
+            )
+        )
+        if (targets.isEmpty()) return StudySummary(0, 0)
+
+        val semaphore = Semaphore(plan.concurrency.coerceIn(1, 8))
+        coroutineScope {
+            targets.map { (course, chapter) ->
+                async(Dispatchers.IO) {
+                    semaphore.withPermit {
+                        processTarget(course, chapter)
+                    }
+                }
+            }.awaitAll()
+        }
+        return StudySummary(done.get(), failed.get())
+    }
+
+    private suspend fun processTarget(course: StudyCourse, chapter: StudyChapter) {
+        var ok = false
+        var lastReason = "任务失败"
+
+        for (attempt in 1..MAX_TRIES) {
+            currentCoroutineContext().ensureActive()
+            val outcome = try {
+                runChapter(course, chapter)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: SessionExpiredException) {
+                lastReason = "会话失效"
+                val relogged = runCatching { api.relogin() }.getOrDefault(false)
+                if (!relogged) break
+                ChapterOutcome.ERROR
+            } catch (e: Exception) {
+                lastReason = e.message ?: e.javaClass.simpleName
+                ChapterOutcome.ERROR
+            }
+
+            when (outcome) {
+                ChapterOutcome.DONE -> {
+                    ok = true
+                    break
+                }
+                ChapterOutcome.NOT_OPEN -> lastReason = "章节未开放"
+                ChapterOutcome.ERROR -> Unit
+            }
+
+            if (attempt < MAX_TRIES) {
+                LogStore.add(
+                    "[刷课] ${course.title} · ${chapter.title} 重试 $attempt/$MAX_TRIES：$lastReason",
+                    false
+                )
+                delay(RETRY_INTERVAL_MS)
+            }
+        }
+
+        if (!ok) failed.incrementAndGet()
+        val finished = done.incrementAndGet()
+        onState(
+            StudyState(
+                running = true,
+                status = "已完成 $finished/$total 章" +
+                    if (failed.get() > 0) "（失败 ${failed.get()}）" else "",
+                current = "${course.title} · ${chapter.title}",
+                doneChapters = finished,
+                totalChapters = total,
+                failedTasks = failed.get()
+            )
+        )
+    }
+
+    private suspend fun runChapter(course: StudyCourse, chapter: StudyChapter): ChapterOutcome {
+        onState(
+            StudyState(
+                running = true,
+                status = "读取任务点：${course.title} · ${chapter.title}",
+                current = "${course.title} · ${chapter.title}",
+                doneChapters = done.get(),
+                totalChapters = total,
+                failedTasks = failed.get()
+            )
+        )
+        val jobs = api.getVideoJobs(course, chapter)
+        if (jobs.notOpen) return ChapterOutcome.NOT_OPEN
+        if (jobs.jobs.isEmpty()) {
+            LogStore.add("[刷课] ${course.title} · ${chapter.title} 无视频任务", true)
+            return ChapterOutcome.DONE
+        }
+
+        var allOk = true
+        jobs.jobs.forEachIndexed { index, job ->
+            currentCoroutineContext().ensureActive()
+            LogStore.add(
+                "[刷课] ${course.title} · ${chapter.title} · ${job.name}" +
+                    "（${index + 1}/${jobs.jobs.size}）",
+                true
+            )
+
+            val key = "${course.key}#${chapter.id}#${job.jobId}"
+            val base = StudyTaskItem(
+                key = key,
+                courseTitle = course.title,
+                chapterTitle = chapter.title,
+                name = job.name
+            )
+            onTask(base.copy(status = StudyTaskStatus.RUNNING, message = "准备中"))
+
+            var lastProgress = 0
+            val result = runVideo(course, job) { pct, msg ->
+                lastProgress = pct
+                onTask(
+                    base.copy(
+                        status = StudyTaskStatus.RUNNING,
+                        progress = pct,
+                        message = msg
+                    )
+                )
+            }
+
+            if (result.ok) {
+                onTask(
+                    base.copy(
+                        status = StudyTaskStatus.DONE,
+                        progress = 100,
+                        message = result.message
+                    )
+                )
+                LogStore.add("[刷课] 视频完成：${job.name}", true)
+            } else {
+                allOk = false
+                onTask(
+                    base.copy(
+                        status = StudyTaskStatus.FAILED,
+                        progress = maxOf(lastProgress, result.progress),
+                        message = result.message
+                    )
+                )
+                LogStore.add("[刷课] 视频未完成：${job.name}（${result.message}）", false)
+            }
+        }
+        return if (allOk) ChapterOutcome.DONE else ChapterOutcome.ERROR
+    }
+
+    private suspend fun runVideo(
+        course: StudyCourse,
+        job: VideoJob,
+        onProgress: (Int, String) -> Unit
+    ): VideoRunResult {
+        var status: VideoStatus = api.videoStatus(job.objectId) ?: run {
+            LogStore.add("[刷课] 取视频信息失败：${job.name}", false)
+            return VideoRunResult(false, 0, "取视频信息失败")
+        }
+
+        var duration = status.duration
+        if (duration <= 0) return VideoRunResult(false, 0, "视频时长异常")
+
+        var playTime = min(duration, (job.playTimeMs / 1000L).toInt().coerceAtLeast(0))
+        val rtCandidates = rtCandidates(job)
+        var chosenRt = rtCandidates.firstOrNull().orEmpty()
+        var lastPercent = -1
+
+        fun emitProgress(force: Boolean = false) {
+            val pct = ((playTime.toDouble() / duration) * 100).toInt().coerceIn(0, 100)
+            if (force || pct != lastPercent) {
+                lastPercent = pct
+                onProgress(pct, "正在播放 $pct%")
+            }
+        }
+
+        emitProgress(force = true)
+
+        // 与上游 study_video 一致：第一次按“已看完”上报，isdrag=4
+        for (rt in rtCandidates) {
+            val r = api.logVideo(course, job, status, duration, duration, 4, "Video", rt)
+            if (r.passed) {
+                onProgress(100, "完成")
+                return VideoRunResult(true, 100, "完成")
+            }
+            if (r.code != 403) {
+                chosenRt = rt
+                break
+            }
+        }
+
+        var wait = Random.nextDouble(30.0, 90.0).toInt()
+        var lastLogged = 0
+        var lastTick = System.currentTimeMillis()
+        var forbidden = 0
+        var endNotified = false
+
+        while (currentCoroutineContext().isActive) {
+            // 上游原逻辑：play_time == duration 时每秒继续上报，直到 isPassed=true
+            if (playTime - lastLogged >= wait || playTime == duration) {
+                val r = logWithRtFallback(
+                    course, job, status, playTime, duration, 3, chosenRt, rtCandidates
+                )
+                when {
+                    r.passed -> {
+                        onProgress(100, "完成")
+                        return VideoRunResult(true, 100, "完成")
+                    }
+
+                    r.code == 403 -> {
+                        forbidden++
+                        if (forbidden > MAX_FORBIDDEN_RETRY) {
+                            return VideoRunResult(false, lastPercent.coerceAtLeast(0), "连续 403")
+                        }
+                        LogStore.add("[刷课] 403，刷新会话后重试（$forbidden/$MAX_FORBIDDEN_RETRY）", false)
+                        delay(2000)
+                        runCatching { api.relogin() }
+                        val fresh = api.videoStatus(job.objectId)
+                        if (fresh != null) {
+                            status = fresh
+                            duration = fresh.duration
+                            playTime = min(playTime, duration)
+                        }
+                    }
+
+                    r.code != 200 -> {
+                        LogStore.add("[刷课] 上报失败 HTTP ${r.code}", false)
+                        return VideoRunResult(false, lastPercent.coerceAtLeast(0), "HTTP ${r.code}")
+                    }
+
+                    else -> {
+                        wait = Random.nextDouble(30.0, 90.0).toInt()
+                        lastLogged = playTime
+                        if (playTime >= duration) {
+                            if (!endNotified) {
+                                endNotified = true
+                                LogStore.add(
+                                    "[刷课] ${job.name} 客户端进度已完成，服务端未完成，持续播放等待服务端结束",
+                                    false
+                                )
+                            }
+                            onProgress(
+                                100,
+                                "客户端进度已完成，服务端未完成，持续播放等待服务端结束"
+                            )
+                        }
+                    }
+                }
+            }
+
+            val now = System.currentTimeMillis()
+            val delta = ((now - lastTick) / 1000.0 * plan.speed).toInt()
+            if (delta > 0) {
+                playTime = min(duration, playTime + delta)
+                lastTick = now
+                emitProgress()
+            }
+            delay(1000)
+        }
+        return VideoRunResult(false, lastPercent.coerceAtLeast(0), "已取消")
+    }
+
+    /** 403 时先换 rt，再走会话恢复；与参考实现一致 */
+    private suspend fun logWithRtFallback(
+        course: StudyCourse,
+        job: VideoJob,
+        status: VideoStatus,
+        playTime: Int,
+        duration: Int,
+        isdrag: Int,
+        preferredRt: String,
+        candidates: List<String>
+    ): VideoLogResult {
+        val order = (listOf(preferredRt) + candidates).filter { it.isNotBlank() }.distinct()
+            .ifEmpty { listOf("") }
+        var last: VideoLogResult? = null
+        for (rt in order) {
+            val r = api.logVideo(course, job, status, playTime, duration, isdrag, "Video", rt)
+            last = r
+            if (r.passed || r.code != 403) return r
+        }
+        return last ?: VideoLogResult(false, 0, "")
+    }
+
+    /** 优先用卡片自带的 rt；没有就从 otherInfo 的 -rt_1d/-rt_1 推断 */
+    private fun rtCandidates(job: VideoJob): List<String> {
+        val direct = job.rt.trim()
+        if (direct.isNotBlank()) return listOf(direct)
+        val flag = Regex("-rt_([1d])").find(job.otherInfo)?.groupValues?.getOrNull(1)
+        return when (flag) {
+            "d" -> listOf("0.9")
+            "1" -> listOf("1")
+            else -> listOf("0.9", "1")
+        }
+    }
+
+    companion object {
+        private const val MAX_TRIES = 5
+        private const val MAX_FORBIDDEN_RETRY = 2
+        private const val RETRY_INTERVAL_MS = 1000L
+    }}

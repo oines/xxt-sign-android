@@ -202,7 +202,7 @@ class MonitorService : Service() {
     private fun buildOngoing(text: String): Notification =
         NotificationCompat.Builder(this, CHANNEL_ONGOING)
             .setSmallIcon(R.drawable.ic_tab_sign)
-            .setContentTitle("学习通签到助手")
+            .setContentTitle("学习通助手")
             .setContentText(text)
             .setOngoing(true)
             .setOnlyAlertOnce(true)

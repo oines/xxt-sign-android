@@ -82,4 +82,31 @@ object Settings {
             o.keys().asSequence().associateWith { o.optString(it) }
         }.getOrDefault(emptyMap())
         set(v) = sp.edit().putString("courseNames", org.json.JSONObject(v as Map<*, *>).toString()).apply()
+
+    // ---------------------------------------------------------------- 刷课
+
+    /** 用哪个账号刷课（Account.id），空 = 未选择 */
+    var studyAccountId: String
+        get() = sp.getString("studyAccount", "") ?: ""
+        set(v) = sp.edit().putString("studyAccount", v).apply()
+
+    /** 并发刷课的章节数 */
+    var studyConcurrency: Int
+        get() = sp.getInt("studyConcurrency", 4).coerceIn(1, 8)
+        set(v) = sp.edit().putInt("studyConcurrency", v.coerceIn(1, 8)).apply()
+
+    /** 视频倍速，1.0–2.0 */
+    var studySpeed: Float
+        get() = sp.getFloat("studySpeed", 1.0f).coerceIn(1.0f, 2.0f)
+        set(v) = sp.edit().putFloat("studySpeed", v.coerceIn(1.0f, 2.0f)).apply()
+
+    /** 已勾选要刷的章节，元素形如 "courseId:clazzId#chapterId" */
+    var studySelectedChapters: Set<String>
+        get() = runCatching {
+            val arr = org.json.JSONArray(sp.getString("studyChapters", "[]"))
+            (0 until arr.length()).map { arr.getString(it) }.toSet()
+        }.getOrDefault(emptySet())
+        set(v) = sp.edit()
+            .putString("studyChapters", org.json.JSONArray(v.toList()).toString())
+            .apply()
 }
