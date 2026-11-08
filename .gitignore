@@ -11,3 +11,12 @@ captures/
 
 # Kotlin 编译诊断日志
 .kotlin/
+
+# 本地凭据 / 签名文件，绝不入库
+.env
+.env.*
+*.jks
+*.keystore
+*.p12
+*.pem
+secrets.properties

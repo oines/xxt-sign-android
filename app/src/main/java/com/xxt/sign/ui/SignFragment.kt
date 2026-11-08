@@ -44,7 +44,7 @@ import java.io.File
 /**
  * 签到页。
  *
- * 交互只保留一个主按钮：点「一键签到 / 签退」→ 检测出所有账号进行中的活动 →
+ * 交互只保留一个主按钮：点「立即签到」→ 检测出所有账号进行中的活动 →
  * 列出来选一个 → **App 按活动类型自己决定该干什么**：
  *
  *   二维码 → 弹扫码，所有账号共用这同一份 enc
@@ -128,15 +128,23 @@ class SignFragment : Fragment() {
     }
 
     private var locDialog: DialogLocationBinding? = null
+    private var pendingLocationDialog = false
 
     private val locPermLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { result ->
         val dialog = locDialog
+        val wantDialog = pendingLocationDialog
+        pendingLocationDialog = false
         if (result.values.any { it }) {
-            if (dialog != null) fillCurrentLocation(dialog)
+            when {
+                dialog != null -> fillCurrentLocation(dialog)
+                // 从「位置还没设置」那一行进来的：直接开坐标设置
+                wantDialog -> showLocationDialog(null)
+            }
         } else {
-            toast("没有定位权限，只能手动填写坐标")
+            toast("没有定位权限，可以手动填坐标")
+            if (wantDialog) showLocationDialog(null)
         }
     }
 
@@ -223,7 +231,7 @@ class SignFragment : Fragment() {
 
     private fun syncSwitch() {
         setSwitch(MonitorService.running)
-        if (MonitorService.running) showStatus("自动巡检运行中（每 ${Settings.intervalSeconds} 秒一轮）")
+        if (MonitorService.running) showStatus("后台在巡检，有签到会自动签（每 ${Settings.intervalSeconds} 秒一轮）")
     }
 
     // ---------------------------------------------------------- 主流程
@@ -247,7 +255,7 @@ class SignFragment : Fragment() {
 
                 when {
                     detected.isEmpty() -> {
-                        showStatus("没有检测到进行中的签到 / 签退")
+                        showStatus("没有检测到进行中的签到")
                         toast("没有进行中的签到")
                     }
 
@@ -659,6 +667,15 @@ class SignFragment : Fragment() {
             ContextCompat.checkSelfPermission(requireContext(), Manifest.permission.ACCESS_COARSE_LOCATION) ==
             PackageManager.PERMISSION_GRANTED
 
+    /** 从「为什么点不动」那一行点进来：先要权限，拿到后再弹坐标设置 */
+    private fun requestLocationPermissionOnly() {
+        locDialog = null
+        pendingLocationDialog = true
+        locPermLauncher.launch(
+            arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION)
+        )
+    }
+
     private fun requestLocationPermission(d: DialogLocationBinding) {
         locDialog = d
         locPermLauncher.launch(
@@ -923,6 +940,18 @@ class SignFragment : Fragment() {
         val hasLoc = lat.isNotBlank() && lon.isNotBlank()
         b.btnSignAll.isEnabled = hasLoc
         b.btnSignAll.alpha = if (hasLoc) 1f else 0.5f
+
+        // 点不动的时候，原因就贴在按钮下面一行，点了直接去设置位置
+        if (hasLoc) {
+            b.tvSignBlocked.visibility = View.GONE
+        } else {
+            b.tvSignBlocked.visibility = View.VISIBLE
+            b.tvSignBlocked.text = "位置还没设置，位置签到现在点不了 · 点这里设置"
+            b.tvSignBlocked.setTextColor(requireContext().getColor(R.color.primary))
+            b.tvSignBlocked.setOnClickListener {
+                if (hasLocationPermission()) showLocationDialog(null) else requestLocationPermissionOnly()
+            }
+        }
         b.tvOptions.text = buildString {
             append("位置：").append(
                 when {

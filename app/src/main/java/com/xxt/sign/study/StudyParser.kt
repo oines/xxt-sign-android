@@ -64,12 +64,17 @@ object StudyParser {
                 val jobCount = li.selectFirst("input.knowledgeJobCount")
                     ?.attr("value")?.toIntOrNull() ?: 1
                 val tip = li.selectFirst("span.bntHoverTips")?.text().orEmpty()
+                // 完成状态以章节目录的 icon_yiwanc 为准：
+                // isPassed 只对视频/音频回填，文档和章节测验永远是 false，不能拿来判断「还差什么」
+                val iconDone = li.selectFirst("i.icon_yiwanc, .icon_yiwanc").let { icon ->
+                    icon != null && !icon.hasClass("icon_yiwanctwo")
+                }
                 out.add(
                     StudyChapter(
                         id = pointId,
                         title = title.ifBlank { "章节 $pointId" },
                         jobCount = jobCount,
-                        finished = tip.contains("已完成"),
+                        finished = iconDone || tip.contains("已完成"),
                         needUnlock = tip.contains("解锁")
                     )
                 )
@@ -182,6 +187,45 @@ object StudyParser {
         return ChapterJobs(false, jobs.values.toList())
     }
 
+    /** attachment 带 jobid 且 job==true 才算任务点（全账号 897 个就是这么数出来的） */
+    fun isRealTaskPoint(card: JSONObject): Boolean {
+        val jobId = card.optString("jobid").takeUnless { it == "null" }.orEmpty()
+        if (jobId.isBlank()) return false
+        val flag = card.opt("job") ?: return false
+        return when (flag) {
+            is Boolean -> flag
+            is Number -> flag.toInt() != 0
+            is String -> flag.equals("true", ignoreCase = true) || flag == "1"
+            else -> false
+        }
+    }
+
+    /** 文档类任务点：type=document，带 jtoken，一次 GET 就算完成 */
+    fun parseDocumentJobs(html: String): List<DocumentJob> {
+        if (html.contains("章节未开放")) return emptyList()
+        val compact = html.replace(" ", "")
+        val raw = Regex("mArg=\\{(.*?)\\};", RegexOption.DOT_MATCHES_ALL)
+            .find(compact)?.groupValues?.getOrNull(1) ?: return emptyList()
+        val json = runCatching { JSONObject("{$raw}") }.getOrNull() ?: return emptyList()
+        val attachments = json.optJSONArray("attachments") ?: return emptyList()
+
+        val out = LinkedHashMap<String, DocumentJob>()
+        for (i in 0 until attachments.length()) {
+            val card = attachments.optJSONObject(i) ?: continue
+            if (!isRealTaskPoint(card)) continue
+            if (!card.optString("type").equals("document", ignoreCase = true)) continue
+            val jobId = card.optString("jobid").takeUnless { it == "null" }.orEmpty()
+            if (jobId.isBlank()) continue
+            val jtoken = card.optString("jtoken").takeUnless { it == "null" }.orEmpty()
+            val name = card.optJSONObject("property")?.optString("name").orEmpty()
+                .ifBlank { card.optString("name") }
+                .takeUnless { it == "null" }.orEmpty()
+                .ifBlank { "文档任务" }
+            out[jobId] = DocumentJob(jobId = jobId, jtoken = jtoken, name = name)
+        }
+        return out.values.toList()
+    }
+
     private fun isPassed(card: JSONObject): Boolean {
         val value = card.opt("isPassed") ?: return false
         return when (value) {
@@ -206,6 +250,8 @@ object StudyParser {
             val card = attachments.optJSONObject(i) ?: continue
             val type = card.optString("type").ifBlank { "unknown" }
             val jobId = card.optString("jobid")
+            // 只有 jobid 存在且 job==true 才是任务点；其余是资料/扩展，不参与"还差什么"
+            if (!isRealTaskPoint(card)) continue
             val mid = card.optString("mid")
             val objectId = card.optString("objectId")
             val key = when {

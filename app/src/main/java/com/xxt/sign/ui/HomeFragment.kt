@@ -52,9 +52,10 @@ class HomeFragment : Fragment() {
             if (on && !Settings.quizAfkWarned) {
                 // 第一次打开：说清楚它会替你交卷，确认一次以后不再问
                 com.google.android.material.dialog.MaterialAlertDialogBuilder(requireContext())
-                    .setTitle("打开挂机后，它会替你交卷")
+                    .setTitle("打开挂机后，它会替你提交章节测验")
                     .setMessage(
-                        "开启后 App 会自动做视频、章节测验和签到，测验会直接提交到学习通，不再逐份问你。\n\n" +
+                        "开启后 App 会自动刷视频、做章节测验、签到，测验会直接提交到学习通，不再逐份问你。\n" +
+                            "作业、考试、要上传的东西它不做。\n\n" +
                             "不放心的话，可以先到「测验 → 设置」里打开「只暂存」，确认没问题再关掉。"
                     )
                     .setPositiveButton("知道了，开始") { _, _ ->
@@ -123,12 +124,16 @@ class HomeFragment : Fragment() {
         b.btnStop.visibility = View.VISIBLE
         b.btnStop.isEnabled = running || MonitorService.running || auto
 
+        // 状态只有三种：在跑 / 卡住了需要你 / 已停止。不做第四种含糊说法。
+        val needMe = QuizHandledStore.humanKeys(Settings.studyAccountId).isNotEmpty() ||
+            CourseAuditStore.loadCurrent().any { it.humanPending > 0 }
         b.tvStatus.text = when {
+            !auto -> "已停止：打开上面的开关就继续"
             quiz.running && quiz.text.isNotBlank() -> quiz.text
             study.running && study.current.isNotBlank() -> "正在刷课：${study.current}"
             study.running -> "正在刷课…"
-            auto -> "正在巡检，有作业会自己处理"
-            else -> "加好账号后打开上面的开关就开始"
+            needMe -> "卡住了：有需要你本人处理的事，见下面"
+            else -> "正在巡检，有视频和测验会自己处理"
         }
 
         val papers = QuizStatsStore.papers()
@@ -237,7 +242,7 @@ class HomeFragment : Fragment() {
             items.add(
                 "${needMe.size} 门课里有它做不了的任务点" to
                     (gap?.let { "${head.courseTitle} · ${it.chapterTitle}：${it.detail}" }
-                        ?: "作业/考试/上传这类得你自己交")
+                        ?: "作业、考试、要上传的东西它不做，这里只提醒你")
             )
         }
         if (Settings.latitude.isBlank() || Settings.longitude.isBlank()) {

@@ -20,6 +20,20 @@ data class StudyChapter(
     val needUnlock: Boolean
 )
 
+/** 一个文档任务点：GET 一次就算完成，最容易自动化 */
+data class DocumentJob(
+    val jobId: String,
+    val jtoken: String,
+    val name: String
+)
+
+/** 一个音频任务点（接口待探测，先只识别） */
+data class AudioJob(
+    val jobId: String,
+    val objectId: String,
+    val name: String
+)
+
 /** 一个视频任务点 */
 data class VideoJob(
     val jobId: String,

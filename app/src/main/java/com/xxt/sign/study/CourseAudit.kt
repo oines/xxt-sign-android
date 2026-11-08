@@ -8,7 +8,7 @@ package com.xxt.sign.study
  *
  * 所以这里不按「交了几份测验」统计，而按**任务点**统计：
  *  - 能自己做完的（视频 / 章节测验）算缺口，做完就减少
- *  - 必须本人出手的（人脸、滑块、位置签到、考试、要上传的作业、未开放章节）单独列出，
+ *  - 必须本人出手的（人脸、滑块、位置签到、考试、要手写/上传的作业、未开放章节）单独列出，
  *    不算失败，但也不假装做完了
  */
 data class CourseAudit(
@@ -124,7 +124,7 @@ object CourseAuditCalculator {
                         gaps.add(
                             CourseAudit.Gap(
                                 CourseAudit.Kind.HUMAN, ch.chapterTitle,
-                                "$rest 个任务点它做不了（作业/考试/上传）"
+                                "$rest 个任务点要你自己做（作业/考试/上传，它不代做）"
                             )
                         )
                     }

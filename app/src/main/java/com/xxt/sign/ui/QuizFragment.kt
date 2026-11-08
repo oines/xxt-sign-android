@@ -264,7 +264,7 @@ class QuizFragment : Fragment() {
         if (_b == null) return
         b.tvMode.text = if (Settings.quizAutoMode) {
             // 只有挂机开着的时候「自动交卷」才有意义，否则读起来自相矛盾
-            val submit = if (Settings.quizStoreOnly) "只暂存" else "自动交卷"
+            val submit = if (Settings.quizStoreOnly) "只暂存" else "自动提交测验"
             "当前：挂机开启（每 ${Settings.quizPatrolMinutes} 分钟巡检） · $submit"
         } else {
             "当前：挂机关闭，仅手动"
@@ -389,7 +389,7 @@ class QuizFragment : Fragment() {
         // 挂机模式下不打断用户；手动模式且会真交卷时才确认
         if (!Settings.quizStoreOnly && !Settings.quizAutoMode) {
             MaterialAlertDialogBuilder(requireContext())
-                .setTitle("要真的交卷吗？")
+                .setTitle("要真的提交测验吗？")
                 .setMessage("设置里已关闭「只暂存」，这次会正式提交到学习通。\n\n建议先确认题库与字体反解都正常。")
                 .setPositiveButton("继续") { _, _ -> runAnswering(account.id, targets) }
                 .setNegativeButton("取消", null)
@@ -620,7 +620,7 @@ class QuizFragment : Fragment() {
                 v.etThreshold.text?.toString()?.toFloatOrNull()?.let { Settings.quizFontThreshold = it }
                 Settings.quizStoreOnly = v.swStoreOnly.isChecked
                 updateMode()
-                toast(if (v.swStoreOnly.isChecked) "已保存（只暂存）" else "已保存（自动交卷）")
+                toast(if (v.swStoreOnly.isChecked) "已保存（只暂存）" else "已保存（自动提交测验）")
             }
             .setNegativeButton("取消", null)
             .show()

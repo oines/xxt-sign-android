@@ -1,6 +1,7 @@
 package com.xxt.sign.study
 
 import com.xxt.sign.net.CxSession
+import com.xxt.sign.core.LogStore
 import com.xxt.sign.net.enc
 import com.xxt.sign.work.WorkJob
 import com.xxt.sign.net.get
@@ -152,7 +153,10 @@ class StudyApi(private val session: CxSession) {
         val out = LinkedHashMap<String, WorkJob>()
         var ktoken = ""
         var cpi = course.cpi.ifBlank { "0" }
-        for (num in 0..6) {
+        // 一个章节可能有多张卡片：只拉 num=0 会漏一大半（体育 91 章只统计到 82 个附件）。
+        // 一直往后翻，直到某一页没有新任务点为止。
+        var emptyStreak = 0
+        for (num in 0..MAX_CARD_PAGES) {
             limiter.acquire()
             val r = c.get(cardsUrl(course, chapter, num))
             checkLogin(r.body)
@@ -175,7 +179,12 @@ class StudyApi(private val session: CxSession) {
                     courseTitle = course.title
                 )
             }
-            if (parsed.jobs.isEmpty() && num > 0) break
+            if (parsed.jobs.isEmpty()) {
+                emptyStreak++
+                if (emptyStreak >= 2 && num > 0) break
+            } else {
+                emptyStreak = 0
+            }
         }
         return out.values.map { if (it.ktoken.isBlank()) it.copy(ktoken = ktoken) else it }
     }
@@ -186,14 +195,61 @@ class StudyApi(private val session: CxSession) {
             "&knowledgeid=${chapter.id}&ut=s&cpi=${course.cpi.ifBlank { "0" }}" +
             "&v=2025-0424-1038-3&mooc2=1&num=$num"
 
+    /**
+     * 文档任务点：GET 一次 `/mooc-ans/job/document` 就算完成，不需要真读。
+     * jtoken 就在 attachment 里。
+     */
+    suspend fun completeDocument(course: StudyCourse, chapter: StudyChapter, job: DocumentJob): Boolean {
+        limiter.acquire()
+        val url = "https://mooc1.chaoxing.com/mooc-ans/job/document" +
+            "?jobid=${enc(job.jobId)}" +
+            "&knowledgeid=${enc(chapter.id)}" +
+            "&courseid=${enc(course.courseId)}" +
+            "&clazzid=${enc(course.clazzId)}" +
+            "&jtoken=${enc(job.jtoken)}" +
+            "&userid=$uid&ut=s&view=pc&isfiled=0&enc=" +
+            enc(buildVideoEnc(course.clazzId, uid, job.jobId, job.jobId, 0, 1))
+        val r = c.get(url, mapOf("Referer" to CHAPTER_REFERER))
+        checkLogin(r.body)
+        if (!r.ok) {
+            LogStore.add("[刷课] 文档 ${job.name} 完成请求失败 HTTP ${r.code}", false)
+            return false
+        }
+        // 服务端成功一般返回 "success" 或 1；非明确失败就当完成（下一轮体检会复核）
+        val failed = r.body.contains("error") && !r.body.contains("success")
+        if (failed) LogStore.add("[刷课] 文档 ${job.name} 返回：${r.body.take(120)}", false)
+        return !failed
+    }
+
+    /** 一个章节里的文档任务点 */
+    suspend fun getDocumentJobs(course: StudyCourse, chapter: StudyChapter): List<DocumentJob> {
+        val out = LinkedHashMap<String, DocumentJob>()
+        var emptyStreak = 0
+        for (num in 0..MAX_CARD_PAGES) {
+            limiter.acquire()
+            val r = c.get(cardsUrl(course, chapter, num))
+            checkLogin(r.body)
+            if (r.body.contains("章节未开放")) return emptyList()
+            val jobs = StudyParser.parseDocumentJobs(r.body)
+            jobs.forEach { out[it.jobId] = it }
+            if (jobs.isEmpty()) {
+                emptyStreak++
+                if (emptyStreak >= 2 && num > 0) break
+            } else {
+                emptyStreak = 0
+            }
+        }
+        return out.values.toList()
+    }
+
     /** 检查一个章节里所有任务点（含视频、章节测验）的完成情况 */
     suspend fun checkChapter(course: StudyCourse, chapter: StudyChapter): ChapterCheck {
         val map = LinkedHashMap<String, CardTask>()
         var notOpen = false
         var noNewStreak = 0
-        // 不用 jobCount 截断：章节测验/文档可能和视频不在同一张卡片上，
-        // 固定检查 0..6，连续两次没有新任务点再提前结束。
-        for (num in 0..6) {
+        // 不用 jobCount 截断：章节测验/文档可能和视频不在同一张卡片上。
+        // 逐 num 往后翻，连续两页没有新任务点才停（漏卡片 = 扫到的测验数就错）。
+        for (num in 0..MAX_CARD_PAGES) {
             checkLimiter.acquire()
             val r = c.get(
                 "https://mooc1.chaoxing.com/mooc-ans/knowledge/cards" +
@@ -314,6 +370,11 @@ class StudyApi(private val session: CxSession) {
     }
 
     companion object {
+        /** 一个章节最多翻多少张卡片（真机上见过十几张） */
+        private const val MAX_CARD_PAGES = 60
+
+        private const val CHAPTER_REFERER = "https://mooc1.chaoxing.com/mooc-ans/knowledge/cards"
+
         private const val INTERACTION_REFERER =
             "https://mooc2-ans.chaoxing.com/mooc2-ans/visit/interaction" +
                 "?moocDomain=https://mooc1-1.chaoxing.com/mooc-ans"

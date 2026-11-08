@@ -288,7 +288,7 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="4dp"
-            android:text="默认是自动交卷。第一次用建议先打开「只暂存」，确认题库和字体都正常后再关掉。"
+            android:text="默认会自动提交测验。第一次用建议先打开「只暂存」，确认题库和字体都正常后再关掉。"
             android:textColor="@color/muted"
             android:textSize="12sp" />
 

@@ -14,7 +14,7 @@
     <string name="ok">确定</string>
     <string name="cancel">取消</string>
 
-    <string name="sign_all">一键签到 / 签退</string>
+    <string name="sign_all">立即签到</string>
     <string name="sign_scan">扫码签到</string>
     <string name="sign_code">签到码签到</string>
     <string name="sign_location">位置设置</string>

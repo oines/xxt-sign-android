@@ -33,14 +33,14 @@
                 android:layout_marginTop="2dp"
                 android:textColor="@color/muted"
                 android:textSize="12sp"
-                android:text="挂机开启 · 自动交卷" />
+                android:text="挂机开启 · 自动提交测验" />
 
             <com.google.android.material.materialswitch.MaterialSwitch
                 android:id="@+id/swAuto"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:layout_marginTop="4dp"
-                android:text="挂机模式（自动巡检 + 自动交卷）" />
+                android:text="挂机模式（自动巡检 + 自动提交测验）" />
 
             <LinearLayout
                 android:layout_width="match_parent"
