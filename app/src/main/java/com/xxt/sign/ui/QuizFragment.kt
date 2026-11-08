@@ -39,6 +39,7 @@ import com.xxt.sign.work.LlmClient
 import com.xxt.sign.work.QuizConfig
 import com.xxt.sign.work.QuizEngine
 import com.xxt.sign.work.QuizResult
+import com.xxt.sign.work.QuizListStore
 import com.xxt.sign.work.QuizRuntime
 import com.xxt.sign.work.QuizStatsStore
 import com.xxt.sign.work.WorkApi
@@ -111,6 +112,7 @@ class QuizFragment : Fragment() {
         b.btnSettings.setOnClickListener { showSettings() }
 
         updateMode()
+        restoreItems()
         refreshChapters()
         b.tvStats.text = "本轮：还没有开始"
         // 进页面自动扫一次，不用先点按钮
@@ -176,6 +178,54 @@ class QuizFragment : Fragment() {
             "已选 ${refs.size} 个章节\n点下面按钮扫描章节测验"
         }
         updateEmpty()
+    }
+
+    /** 重启后恢复上次扫描结果与状态 */
+    private fun restoreItems() {
+        val account = AccountStore.get(Settings.studyAccountId) ?: return
+        if (quizItems.isNotEmpty()) return
+        val saved = QuizListStore.load(account.id)
+        if (saved.isEmpty()) return
+        quizItems.clear()
+        saved.forEach { s ->
+            quizItems.add(
+                QuizItem(
+                    job = com.xxt.sign.work.WorkJob(
+                        courseId = s.courseId, clazzId = s.clazzId, cpi = s.cpi,
+                        chapterId = s.chapterId, chapterTitle = s.chapterTitle,
+                        jobId = s.jobId, workId = s.workId, enc = s.enc, ktoken = s.ktoken,
+                        name = s.name, courseTitle = s.courseTitle
+                    ),
+                    courseTitle = s.courseTitle,
+                    questionCount = s.questionCount,
+                    state = s.state,
+                    checked = s.checked,
+                    submitted = s.submitted,
+                    score = s.score,
+                    time = s.time,
+                    error = s.error
+                )
+            )
+        }
+        adapter.submit(quizItems.toList())
+        updateEmpty()
+    }
+
+    private fun persistItems() {
+        val account = AccountStore.get(Settings.studyAccountId) ?: return
+        QuizListStore.save(
+            account.id,
+            quizItems.map { i ->
+                QuizListStore.Saved(
+                    courseId = i.job.courseId, clazzId = i.job.clazzId, cpi = i.job.cpi,
+                    chapterId = i.job.chapterId, chapterTitle = i.job.chapterTitle,
+                    jobId = i.job.jobId, workId = i.job.workId, enc = i.job.enc,
+                    ktoken = i.job.ktoken, name = i.job.name, courseTitle = i.courseTitle,
+                    questionCount = i.questionCount, state = i.state, checked = i.checked,
+                    submitted = i.submitted, score = i.score, time = i.time, error = i.error
+                )
+            }
+        )
     }
 
     private fun updateEmpty() {
@@ -244,6 +294,7 @@ class QuizFragment : Fragment() {
                 quizItems.clear()
                 quizItems.addAll(found)
                 adapter.submit(quizItems.toList())
+                persistItems()
                 updateEmpty()
                 b.tvStatus.text = if (found.isEmpty()) {
                     "这些章节里没有章节测验"
@@ -383,6 +434,7 @@ class QuizFragment : Fragment() {
                             error = if (r.submitted) "" else r.message
                         )
                         adapter.update(pos, quizItems[pos])
+                        persistItems()
                     }
 
                     if (r.submitted) {

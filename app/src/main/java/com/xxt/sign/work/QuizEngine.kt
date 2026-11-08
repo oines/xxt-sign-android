@@ -180,7 +180,7 @@ class QuizEngine(
         val msg = buildString {
             if (submit.ok) append(mode).append("：").append(rateText)
             else append("提交失败：").append(submit.message).append("｜").append(rateText)
-            append("｜题库 ").append(bank).append(" / LLM ").append(byLlm).append(" / 留空 ").append(blank)
+            append("｜答上 ").append(submitAnswers.size).append(" 题 · ").append(blank).append(" 题没把握")
             if (low) append("｜低置信，建议回看")
         }
         log("[测验] ${job.chapterTitle} · ${page.title} $msg", submit.ok && !low)

@@ -543,13 +543,13 @@ class SignFragment : Fragment() {
 
     private fun showSettings() {
         val items = arrayOf(
-            "位置坐标　—　${locSummary()}",
-            "定位来源　—　${if (Settings.gpsOnly) "仅 GPS（准）" else "自动（取最准）"}",
-            "拍照签到图片　—　${if (Settings.photoPath.isBlank()) "未选" else "已选"}",
-            "课堂范围　—　${courseSummary()}",
-            "巡检频率　—　${Settings.intervalSeconds} 秒/轮",
-            "手势签到练习（画一下看手势码）",
-            "网页签到（人工兜底）"
+            "位置坐标　—　${locSummary()}　›",
+            "定位来源　—　${if (Settings.gpsOnly) "仅 GPS（准）" else "自动（取最准）"}　›",
+            "拍照签到图片　—　${if (Settings.photoPath.isBlank()) "未选" else "已选"}　›",
+            "课堂范围　—　${courseSummary()}　›",
+            "巡检频率　—　${Settings.intervalSeconds} 秒/轮　›",
+            "手势签到练习（画一下看手势码）　›",
+            "网页签到（人工兜底）　›"
         )
         MaterialAlertDialogBuilder(requireContext())
             .setTitle("设置")

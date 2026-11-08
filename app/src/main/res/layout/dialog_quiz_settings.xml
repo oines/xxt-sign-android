@@ -251,7 +251,7 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="2dp"
-            android:text="阈值只是兜底：平时会按每卷的相似度自动放宽，只有明显对不上的字才留空"
+            android:text="阈值只是兜底：平时会按每卷的识别情况自动放宽，只有明显对不上的字才留空"
             android:textColor="@color/muted"
             android:textSize="12sp" />
 

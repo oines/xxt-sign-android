@@ -132,7 +132,7 @@ class AccountsFragment : Fragment() {
             d.tvHint.text = when (mode) {
                 1 -> "验证码登录不会把密码留在本机。若提示需要图形验证，请换「网页登录」。"
                 2 -> "网页登录最稳：直接用官方页面，遇到滑块/点选验证码手动过一下就行，也不需要存密码。"
-                else -> "密码方式会自动复用 Cookie 会话，正常只需登录一次。"
+                else -> "登录后会自动记住，不用每次输密码。"
             }
         }
 
@@ -156,14 +156,33 @@ class AccountsFragment : Fragment() {
             .create()
         dialog.show()
 
+        dialog.window?.setSoftInputMode(
+            android.view.WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE
+        )
+
         dialog.getButton(DialogInterface.BUTTON_POSITIVE).setOnClickListener {
+            d.tilPhone.error = null
+            d.tilPassword.error = null
             val phone = d.etPhone.text?.toString()?.trim().orEmpty()
-            if (phone.isEmpty()) return@setOnClickListener toast("请输入手机号")
+            if (phone.isEmpty()) {
+                d.tilPhone.error = "请输入手机号"
+                d.etPhone.requestFocus()
+                return@setOnClickListener
+            }
+            if (phone.length != 11 || !phone.all { it.isDigit() }) {
+                d.tilPhone.error = "手机号应该是 11 位数字"
+                d.etPhone.requestFocus()
+                return@setOnClickListener
+            }
 
             val code = d.etCode.text?.toString()?.trim().orEmpty()
             val pwd = d.etPassword.text?.toString().orEmpty()
             if (mode == 1 && code.isEmpty()) return@setOnClickListener toast("请先获取并输入短信验证码")
-            if (mode == 0 && pwd.isEmpty()) return@setOnClickListener toast("请输入密码")
+            if (mode == 0 && pwd.isEmpty()) {
+                d.tilPassword.error = "请输入密码"
+                d.etPassword.requestFocus()
+                return@setOnClickListener
+            }
 
             val acc = Account(
                 phone = phone,

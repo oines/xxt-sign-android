@@ -300,7 +300,7 @@ class MonitorService : Service() {
                 r.submitted -> {
                     val score = if (r.score.isBlank()) "" else "${r.score} 分｜"
                     val low = if (r.isLowConfidence(Settings.quizHitThreshold)) "（低置信，建议回看）" else ""
-                    "$head：$score 命中 ${(r.hitRate * 100).toInt()}%$low"
+                    "$head：$score 答上 ${r.answered}/${r.total} 题$low"
                 }
                 else -> "$head：${r.message}"
             }
@@ -314,7 +314,7 @@ class MonitorService : Service() {
             submitted > 0 -> "章节测验：已自动交 $submitted 份"
             else -> "章节测验：${pass.results.size} 份没交上"
         }
-        val summary = "题库命中 $bank / LLM 兜底 $byLlm / 留空 $blank"
+        val summary = "答上 ${bank + byLlm} 题 · $blank 题没把握"
         notifyAlert(title, (listOf(summary) + lines).joinToString("\n"), high = pass.pendingHuman > 0)
     }
 
