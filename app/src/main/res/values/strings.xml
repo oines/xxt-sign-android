@@ -20,4 +20,5 @@
     <string name="sign_location">位置设置</string>
     <string name="sign_photo">拍照签到图片</string>
     <string name="auto_monitor">后台巡检（自动签能签的，其余提醒）</string>
+    <string name="tab_sign_records">签到记录</string>
 </resources>

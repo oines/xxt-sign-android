@@ -141,6 +141,11 @@ class MonitorService : Service() {
                 val ok = rs.count { it.ok }
                 handled[d.aid] = System.currentTimeMillis()
                 if (ok > 0) autoSigned++
+                record(
+                    title = d.title,
+                    ok = ok > 0,
+                    reason = if (ok > 0) "" else (rs.firstOrNull { !it.ok }?.detail ?: "服务端没接受")
+                )
                 notifyAlert(
                     title = if (ok > 0) "✅ 已自动签" else "⚠️ 自动签未成功",
                     text = "${d.title}　成功 $ok/${rs.size}",
@@ -158,7 +163,17 @@ class MonitorService : Service() {
                 text = needHuman.joinToString("、") { "${it.title}（${whyHuman(it)}）" },
                 high = true
             )
-            needHuman.forEach { handled[it.aid] = System.currentTimeMillis() }
+            needHuman.forEach {
+                handled[it.aid] = System.currentTimeMillis()
+                record(title = it.title, ok = false, reason = whyHuman(it))
+            }
+            // 首页那行高亮要倒计时：能算出来就给个截止时间
+            val first = needHuman.first()
+            publishSignCard(
+                title = "要你处理 · ${whyHuman(first)}",
+                detail = first.label.ifBlank { first.courseName },
+                deadline = deadlineOf(first)
+            )
         }
 
         updateOngoing(
@@ -392,9 +407,43 @@ class MonitorService : Service() {
         getSystemService(NotificationManager::class.java).notify(NOTIFY_ONGOING, buildOngoing(text))
     }
 
+    /** 签到记录：只写事实，页面只读 */
+    private fun record(title: String, ok: Boolean, reason: String) {
+        runCatching {
+            com.xxt.sign.core.SignRecordStore.add(
+                this,
+                com.xxt.sign.core.SignRecord(
+                    title = title,
+                    at = System.currentTimeMillis(),
+                    ok = ok,
+                    reason = reason
+                )
+            )
+        }
+    }
+
     /** 签到动态：能自动签的只留一行结果，签不了的才升级成「要你本人」 */
-    private fun publishSignCard(title: String, detail: String) {
-        runCatching { com.xxt.sign.core.SignEvents.publish(this, title, detail) }
+    private fun publishSignCard(title: String, detail: String, deadline: Long = 0L) {
+        runCatching { com.xxt.sign.core.SignEvents.publish(this, title, detail, deadline) }
+    }
+
+    /** 活动结束时间：字段名不确定，几个常见的都试一下 */
+    private fun deadlineOf(d: SignPlanner.Detected): Long {
+        val detail = d.detail
+        val keys = listOf("endTime", "endtime", "signEndTime", "endTimeStr")
+        for (k in keys) {
+            val raw = detail.optString(k)
+            if (raw.isBlank()) continue
+            raw.toLongOrNull()?.let { ms ->
+                val norm = if (ms < 10_000_000_000L) ms * 1000 else ms
+                if (norm > System.currentTimeMillis()) return norm
+            }
+            runCatching {
+                val fmt = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", java.util.Locale.getDefault())
+                fmt.parse(raw)?.time?.takeIf { it > System.currentTimeMillis() }?.let { return it }
+            }
+        }
+        return System.currentTimeMillis() + 30 * 60_000L
     }
 
     private fun notifyAlert(title: String, text: String, high: Boolean) {

@@ -16,6 +16,7 @@ import com.xxt.sign.R
 import com.xxt.sign.core.AccountStore
 import com.xxt.sign.core.Settings
 import com.xxt.sign.core.SignEvents
+import com.xxt.sign.core.SignRecordStore
 import com.xxt.sign.databinding.FragmentHomeBinding
 import com.xxt.sign.study.CourseAuditStore
 import com.xxt.sign.study.CourseRunQueue
@@ -55,6 +56,9 @@ class HomeFragment : Fragment() {
         b.rvCourses.layoutManager = LinearLayoutManager(requireContext())
         b.rvCourses.adapter = adapter
 
+        // 常驻签到状态行：只是状态，点了进记录页，没有任何开关
+        b.tvSignLine.setOnClickListener { (activity as? com.xxt.sign.MainActivity)?.openSignRecords() }
+
         viewLifecycleOwner.lifecycleScope.launch {
             viewLifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
                 launch { CourseRunQueue.states.collect { renderCourses() } }
@@ -81,7 +85,39 @@ class HomeFragment : Fragment() {
     private fun render() {
         if (_b == null) return
         renderCourses()
+        renderSignLine()
         renderHuman()
+    }
+
+    /**
+     * 签到要有存在感，但不能是个开关：
+     * 没签过 → 巡检中；签上了 → 一行结果；要人来 → 高亮 + 倒计时。
+     */
+    private fun renderSignLine() {
+        if (_b == null) return
+        val ctx = requireContext()
+        val pending = SignEvents.pending(ctx)
+        val today = SignRecordStore.load(ctx)
+            .firstOrNull { sameDay(it.at, System.currentTimeMillis()) }
+
+        val (text, color) = when {
+            pending != null -> {
+                val left = pending.minutesLeft()
+                val tail = if (left >= 0) "，还有 $left 分钟" else ""
+                "要你处理 · ${pending.detail.ifBlank { pending.title }}$tail" to R.color.err
+            }
+            today != null && today.ok -> "已签到 · ${today.title}" to R.color.ok
+            today != null -> "今天签到没签上：${today.reason}" to R.color.err
+            else -> "签到巡检中 · 今天还没有签到" to R.color.muted
+        }
+        b.tvSignLine.text = text
+        b.tvSignLine.setTextColor(ctx.getColor(color))
+        b.tvSignLine.visibility = View.VISIBLE
+    }
+
+    private fun sameDay(a: Long, b: Long): Boolean {
+        val fmt = java.text.SimpleDateFormat("yyyyMMdd", java.util.Locale.getDefault())
+        return fmt.format(java.util.Date(a)) == fmt.format(java.util.Date(b))
     }
 
     private fun renderCourses() {
@@ -122,9 +158,6 @@ class HomeFragment : Fragment() {
         b.llHuman.removeAllViews()
         val accountId = Settings.studyAccountId
         val items = mutableListOf<Pair<String, String>>()
-
-        val signCard = SignEvents.pending(requireContext())
-        if (signCard != null) items.add(signCard.title to signCard.detail)
 
         val pending = if (accountId.isBlank()) emptySet() else QuizHandledStore.humanKeys(accountId)
         if (pending.isNotEmpty()) {

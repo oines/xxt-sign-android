@@ -10,6 +10,10 @@
         android:title="设置"
         app:showAsAction="never" />
     <item
+        android:id="@+id/action_sign_records"
+        android:title="签到记录"
+        app:showAsAction="never" />
+    <item
         android:id="@+id/action_logs"
         android:title="日志"
         app:showAsAction="never" />

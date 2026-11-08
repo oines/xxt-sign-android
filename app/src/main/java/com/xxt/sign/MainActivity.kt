@@ -37,7 +37,7 @@ class MainActivity : AppCompatActivity() {
         // （真机上从日志页返回会直接回桌面，还会把桌面搜索框唤醒）
         onBackPressedDispatcher.addCallback(this, object : androidx.activity.OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
-            if (currentRoute == Route.LOG) {
+            if (currentRoute == Route.LOG || currentRoute == Route.SIGN_RECORDS) {
                 binding.bottomNav.selectedItemId = R.id.nav_home
                 showTab(Route.HOME)
             } else {
@@ -72,6 +72,10 @@ class MainActivity : AppCompatActivity() {
                 }
                 R.id.action_refresh -> {
                     refreshCourses()
+                    true
+                }
+                R.id.action_sign_records -> {
+                    showTab(Route.SIGN_RECORDS)
                     true
                 }
                 R.id.action_logs -> {
@@ -144,8 +148,11 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    /** 日志是二级页：不在底栏里，从首页/测验页进来 */
+    /** 日志是二级页：不在底栏里，从右上角菜单进来 */
     fun openLogs() = showTab(Route.LOG)
+
+    /** 签到记录：首页那行签到状态点进来 */
+    fun openSignRecords() = showTab(Route.SIGN_RECORDS)
 
     private fun routeOf(itemId: Int): Route? = when (itemId) {
         R.id.nav_home -> Route.HOME
@@ -168,6 +175,7 @@ class MainActivity : AppCompatActivity() {
     private enum class Route(val tag: String, val titleRes: Int) {
         HOME("tab_home", R.string.tab_home),
         ACCOUNTS("tab_accounts", R.string.tab_accounts),
+        SIGN_RECORDS("tab_sign_records", R.string.tab_sign_records),
         LOG("tab_log", R.string.tab_log)
     }
 
@@ -180,6 +188,7 @@ class MainActivity : AppCompatActivity() {
             Route.HOME -> HomeFragment()
             Route.ACCOUNTS -> AccountsFragment()
             Route.LOG -> LogFragment()
+            Route.SIGN_RECORDS -> com.xxt.sign.ui.SignRecordFragment()
         }
 
         val ft = fm.beginTransaction()

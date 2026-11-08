@@ -2,6 +2,8 @@ package com.xxt.sign
 
 import android.view.View
 import androidx.test.core.app.ApplicationProvider
+import org.junit.Assert.assertEquals
+import org.robolectric.Shadows.shadowOf
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -50,5 +52,40 @@ class MainActivitySmokeTest {
         val nav = activity.findViewById<com.google.android.material.bottomnavigation.BottomNavigationView>(R.id.bottomNav)
         val size = nav.menu.size()
         assertTrue("底栏项数=$size，必须 ≤5", size in 1..5)
+    }
+
+    /** 右上角菜单必须真的有四项，而且点了能进去（设置/刷新课程/签到记录/日志） */
+    @Test
+    fun toolbarMenuHasSettingsRefreshSignRecordsAndLogs() {
+        val activity = Robolectric.buildActivity(MainActivity::class.java).setup().get()
+        val toolbar = activity.findViewById<com.google.android.material.appbar.MaterialToolbar>(R.id.toolbar)
+        assertNotNull("toolbar 没找到", toolbar)
+
+        val titles = (0 until toolbar.menu.size()).map { toolbar.menu.getItem(it).title.toString() }
+        assertTrue("菜单缺项：$titles", titles.contains("设置"))
+        assertTrue("菜单缺项：$titles", titles.contains("刷新课程"))
+        assertTrue("菜单缺项：$titles", titles.contains("签到记录"))
+        assertTrue("菜单缺项：$titles", titles.contains("日志"))
+
+        // 签到记录页：空列表显示「还没有签到记录」，且没有任何开关
+        toolbar.menu.performIdentifierAction(R.id.action_sign_records, 0)
+        shadowOf(activity.mainLooper).idle()
+        val fragment = activity.supportFragmentManager.fragments
+            .firstOrNull { it.javaClass.simpleName == "SignRecordFragment" }
+        assertNotNull("签到记录页没打开", fragment)
+        assertNotNull(fragment!!.view)
+        val empty = fragment.view!!.findViewById<android.widget.TextView>(R.id.tvEmpty)
+        assertEquals("还没有签到记录", empty.text.toString())
+        val switches = countSwitches(fragment.view!!)
+        assertEquals("签到记录页不该有任何开关", 0, switches)
+    }
+
+    private fun countSwitches(v: View): Int {
+        var n = 0
+        if (v is android.widget.CompoundButton) n++
+        if (v is android.view.ViewGroup) {
+            for (i in 0 until v.childCount) n += countSwitches(v.getChildAt(i))
+        }
+        return n
     }
 }
