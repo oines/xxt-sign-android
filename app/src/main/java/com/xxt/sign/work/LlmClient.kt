@@ -16,9 +16,12 @@ import java.util.concurrent.TimeUnit
  * 可替换的 HTTP 层。
  * 单测里注入假实现，就能把「重试 / 解析 / 校验」整条链路跑一遍，不联网。
  */
+/** HTTP 结果：状态码 + 响应体（失败时也要带上，日志才能看出是 401/404/模型不存在） */
+data class LlmHttpResult(val code: Int, val body: String)
+
 interface LlmHttp {
-    /** 成功返回响应体；网络失败 / 超时 / 非 2xx 返回 null */
-    fun post(url: String, headers: Map<String, String>, body: String, timeoutMs: Long): String?
+    /** 网络层彻底失败（超时/连不上）返回 null；有响应就带上状态码和 body */
+    fun post(url: String, headers: Map<String, String>, body: String, timeoutMs: Long): LlmHttpResult?
 }
 
 class OkHttpLlmHttp(private val client: OkHttpClient = Http.base) : LlmHttp {
@@ -27,7 +30,7 @@ class OkHttpLlmHttp(private val client: OkHttpClient = Http.base) : LlmHttp {
         headers: Map<String, String>,
         body: String,
         timeoutMs: Long
-    ): String? = runCatching {
+    ): LlmHttpResult? = runCatching {
         val builder = Request.Builder()
             .url(url)
             .post(body.toRequestBody("application/json".toMediaType()))
@@ -37,7 +40,7 @@ class OkHttpLlmHttp(private val client: OkHttpClient = Http.base) : LlmHttp {
             .build()
             .newCall(builder.build())
             .execute()
-            .use { r -> if (r.isSuccessful) r.body?.string() else null }
+            .use { r -> LlmHttpResult(r.code, r.body?.string().orEmpty()) }
     }.getOrNull()
 }
 
@@ -55,7 +58,9 @@ class LlmClient(
     private val model: String = DEFAULT_MODEL,
     private val http: LlmHttp = OkHttpLlmHttp(),
     private val timeoutMs: Long = 20_000L,
-    private val retryDelayMs: Long = 800L
+    private val retryDelayMs: Long = 800L,
+    /** 这个模型是「先推理再出正文」，推理档位越低越省、越不干扰 JSON 输出 */
+    private val effort: String = DEFAULT_EFFORT
 ) {
 
     /** 最近一次失败原因，给日志用 */
@@ -94,13 +99,16 @@ class LlmClient(
             .put(JSONObject().put("role", "system").put("content", SYSTEM_PROMPT))
             .put(JSONObject().put("role", "user").put("content", builder.toString()))
 
-        return JSONObject()
+        val body = JSONObject()
             .put("model", model.ifBlank { DEFAULT_MODEL })
             .put("temperature", 0)
-            .put("max_tokens", 48)
+            // 不传 max_tokens：额度那点钱不值得省，传小了推理段会把预算吃光、正文变空
             .put("stream", false)
             .put("messages", messages)
-            .toString()
+        // 只填一个字母，把推理压到最低（low/high/max）
+        val eff = effort.trim().lowercase()
+        if (eff in EFFORTS) body.put("reasoning_effort", eff)
+        return body.toString()
     }
 
     /** 调一次模型（含 1 次重试与校验） */
@@ -115,44 +123,183 @@ class LlmClient(
             "Content-Type" to "application/json"
         )
 
-        var raw: String? = null
+        var resp: LlmHttpResult? = null
         for (attempt in 0..1) {
-            raw = http.post(endpoint, headers, body, timeoutMs)
-            if (raw != null) break
+            resp = http.post(endpoint, headers, body, timeoutMs)
+            // 4xx 是配置问题（key/地址/模型名），重试没意义
+            if (resp != null && resp.code in 400..499) break
+            if (resp != null && resp.code in 200..299) break
             if (attempt == 0 && retryDelayMs > 0) delay(retryDelayMs)
         }
-        if (raw == null) {
-            lastError = "网络失败（已重试 1 次）"
+        if (resp == null) {
+            lastError = "连不上 ${endpoint}（网络或代理问题，已重试 1 次）"
             return@withContext null
         }
 
-        val content = extractContent(raw)
+        // 失败就把原文写进日志，别只说「没有 content」
+        if (resp.code !in 200..299) {
+            lastError = readableError(resp)
+            log("[LLM] 请求失败：${resp.code} ${resp.body.take(300)}", false)
+            return@withContext null
+        }
+
+        val parsed = parseMessage(resp.body)
+        val content = parsed.content
         if (content == null) {
-            lastError = "响应里没有 choices[0].message.content"
+            lastError = parsed.error
+            log("[LLM] ${parsed.error}｜原始返回：${resp.body.take(300)}", false)
             return@withContext null
         }
 
         val check = LlmFormat.check(content, q)
         if (!check.ok) {
             lastError = check.reason
+            log("[LLM] 格式校验没过（${check.reason}）｜原始返回：${resp.body.take(300)}", false)
             return@withContext null
         }
         QuizAnswer(check.value, "LLM·${model.ifBlank { DEFAULT_MODEL }}")
     }
 
-    /** OpenAI 兼容响应 → content；兼容 ```json 包裹 */
-    internal fun extractContent(raw: String): String? {
-        val root = runCatching { JSONObject(raw) }.getOrNull() ?: return null
-        val choices = root.optJSONArray("choices") ?: return null
-        val first = choices.optJSONObject(0) ?: return null
-        val content = first.optJSONObject("message")?.optString("content")
-            ?.takeIf { it.isNotBlank() } ?: first.optString("text").takeIf { it.isNotBlank() }
-        return content
+    /** 把各种失败翻成人能看懂的一句话 */
+    internal fun readableError(resp: LlmHttpResult): String = when (resp.code) {
+        401, 403 -> "key 无效或没权限（HTTP ${resp.code}）"
+        404 -> "接口地址不对（HTTP 404），base_url 应该是 https://api.deepseek.com 这种，不要带 /chat/completions"
+        429 -> "请求太频繁被限流（HTTP 429）"
+        in 500..599 -> "服务端错误（HTTP ${resp.code}）"
+        else -> "HTTP ${resp.code}：${shortError(resp.body)}"
     }
+
+    /** 200 但内容是 error / 空 content 的情况 */
+    internal fun readableBodyError(body: String): String {
+        val msg = runCatching {
+            JSONObject(body).optJSONObject("error")?.optString("message")
+        }.getOrNull()
+        if (!msg.isNullOrBlank()) {
+            return if (msg.contains("model", ignoreCase = true)) {
+                "模型名不对：$msg（DeepSeek 官方只认 deepseek-chat / deepseek-reasoner）"
+            } else {
+                "服务端返回错误：$msg"
+            }
+        }
+        return "返回里没有 choices[0].message.content：${body.take(120)}"
+    }
+
+    private fun shortError(body: String): String {
+        val msg = runCatching {
+            JSONObject(body).optJSONObject("error")?.optString("message")
+        }.getOrNull()
+        return msg?.takeIf { it.isNotBlank() } ?: body.take(120)
+    }
+
+    /** 原始返回写日志，截断 300 字，排查用 */
+    private fun log(message: String, ok: Boolean) {
+        runCatching { com.xxt.sign.core.LogStore.add(message, ok) }
+    }
+
+    data class Parsed(
+        val content: String?,
+        val error: String = "",
+        val fromReasoning: Boolean = false,
+        val finishReason: String = ""
+    )
+
+    /**
+     * 解析一条 chat/completions 响应。
+     *
+     * 踩过的坑：这个模型「先推理后正文」，`max_tokens` 小的时候正文直接是空的，
+     * 推理内容在 `reasoning_content` / `reasoning` 里。所以：
+     *  - 先读 content
+     *  - content 空就读推理段，里面要是有 JSON 答案也能用（标一下来自推理）
+     *  - 两边都空，给一句能直接定位原因的话
+     */
+    internal fun parseMessage(raw: String): Parsed {
+        val root = runCatching { JSONObject(raw) }.getOrNull()
+            ?: return Parsed(null, "返回不是 JSON：${raw.take(120)}")
+
+        root.optJSONObject("error")?.optString("message")?.takeIf { it.isNotBlank() }?.let { msg ->
+            return Parsed(null, readableBodyError(raw))
+        }
+
+        val choices = root.optJSONArray("choices")
+        val first = choices?.optJSONObject(0)
+        val msg = first?.optJSONObject("message")
+
+        val content = (msg?.optString("content")?.takeIf { it.isNotBlank() }
+            ?: first?.optString("text")?.takeIf { it.isNotBlank() })
+
+        if (content != null) return Parsed(content, finishReason = first?.optString("finish_reason").orEmpty())
+
+        val reasoning = listOf("reasoning_content", "reasoning")
+            .firstNotNullOfOrNull { k -> msg?.optString(k)?.takeIf { it.isNotBlank() } }
+        if (reasoning != null) {
+            // 推理段里可能就有 {"answer":"A"}
+            val hasJson = Regex("\\{\\s*\"answer\"").containsMatchIn(reasoning)
+            return if (hasJson) {
+                Parsed(reasoning, fromReasoning = true, finishReason = first?.optString("finish_reason").orEmpty())
+            } else {
+                Parsed(
+                    null,
+                    "模型只返回了推理，没有正文（reasoning_effort 太高，或服务端把预算用完了）"
+                )
+            }
+        }
+
+        val finish = first?.optString("finish_reason").orEmpty()
+        return Parsed(
+            null,
+            if (finish == "length")
+                "输出被截断，推理占用全部额度（finish_reason=length）。正常情况下我们没传 max_tokens，" +
+                    "如果你手动设过上限，把它去掉"
+            else "返回里没有 choices[0].message.content：${raw.take(120)}",
+            finishReason = finish
+        )
+    }
+
+    /** 测试连接：发一条最小请求，把结果说成人话 */
+    suspend fun probe(): Probe = withContext(Dispatchers.IO) {
+        if (!enabled) return@withContext Probe(false, "还没填 key")
+        val body = JSONObject()
+            .put("model", model.ifBlank { DEFAULT_MODEL })
+            .put("temperature", 0)
+            .put("stream", false)
+            .put(
+                "messages", JSONArray()
+                    .put(JSONObject().put("role", "user").put("content", "回复 ok"))
+            )
+            .toString()
+        val headers = mapOf(
+            "Authorization" to "Bearer $apiKey",
+            "Content-Type" to "application/json"
+        )
+        val started = System.currentTimeMillis()
+        val resp = runCatching { http.post(endpoint, headers, body, timeoutMs) }.getOrNull()
+            ?: return@withContext Probe(false, "连不上 $endpoint（网络或代理）")
+        val ms = System.currentTimeMillis() - started
+
+        if (resp.code !in 200..299) {
+            return@withContext Probe(false, readableError(resp) + "｜" + resp.body.take(200))
+        }
+        val parsed = parseMessage(resp.body)
+        val finish = parsed.finishReason.ifBlank { "-" }
+        if (parsed.content != null) {
+            Probe(
+                true,
+                "通了：content=\"${parsed.content.trim().take(40)}\", finish_reason=$finish, 耗时 ${ms}ms"
+            )
+        } else {
+            Probe(false, "${parsed.error}（finish_reason=$finish，耗时 ${ms}ms）")
+        }
+    }
+
+    data class Probe(val ok: Boolean, val detail: String)
 
     companion object {
         const val DEFAULT_BASE_URL = "https://api.deepseek.com"
         const val DEFAULT_MODEL = "deepseek-chat"
+
+        /** 推理档位：low 最省，只填一个字母不需要想太多 */
+        const val DEFAULT_EFFORT = "low"
+        val EFFORTS = setOf("low", "medium", "high", "max")
 
         private const val SYSTEM_PROMPT =
             "你是答题器。只输出一个 JSON 对象，不要任何解释、不要 Markdown 代码块。"

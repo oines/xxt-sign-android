@@ -570,6 +570,30 @@ class QuizFragment : Fragment() {
         v.etLlmKey.setText(Settings.quizLlmKey)
         v.etLlmBaseUrl.setText(Settings.quizLlmBaseUrl)
         v.etLlmModel.setText(Settings.quizLlmModel)
+        v.btnTestLlm.setOnClickListener {
+            val key = v.etLlmKey.text?.toString()?.trim().orEmpty()
+            val base = v.etLlmBaseUrl.text?.toString()?.trim().orEmpty()
+            val model = v.etLlmModel.text?.toString()?.trim().orEmpty()
+            if (key.isBlank()) {
+                v.tvLlmTest.text = "先填 key"
+                v.tvLlmTest.setTextColor(requireContext().getColor(com.xxt.sign.R.color.err))
+                return@setOnClickListener
+            }
+            v.tvLlmTest.text = "正在测试…"
+            v.tvLlmTest.setTextColor(requireContext().getColor(com.xxt.sign.R.color.muted))
+            viewLifecycleOwner.lifecycleScope.launch {
+                val probe = com.xxt.sign.work.LlmClient(
+                    apiKey = key,
+                    baseUrl = base.ifBlank { com.xxt.sign.work.LlmClient.DEFAULT_BASE_URL },
+                    model = model.ifBlank { com.xxt.sign.work.LlmClient.DEFAULT_MODEL }
+                ).probe()
+                if (_b == null) return@launch
+                v.tvLlmTest.text = probe.detail
+                v.tvLlmTest.setTextColor(
+                    requireContext().getColor(if (probe.ok) com.xxt.sign.R.color.ok else com.xxt.sign.R.color.err)
+                )
+            }
+        }
         bindLinks(v.tvLinks)
 
         MaterialAlertDialogBuilder(requireContext())

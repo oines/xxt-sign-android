@@ -133,6 +133,7 @@
         </com.google.android.material.textfield.TextInputLayout>
 
         <com.google.android.material.textfield.TextInputLayout
+            android:id="@+id/tilLlmModel"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="8dp"
@@ -146,11 +147,23 @@
                 android:minHeight="56dp" />
         </com.google.android.material.textfield.TextInputLayout>
 
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/btnTestLlm"
+            style="@style/Widget.Material3.Button.OutlinedButton"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:insetTop="0dp"
+            android:insetBottom="0dp"
+            android:minHeight="40dp"
+            android:text="测试连接" />
+
         <TextView
+            android:id="@+id/tvLlmTest"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="2dp"
-            android:text="默认 DeepSeek（deepseek-chat），也可以填其它 OpenAI 兼容服务"
+            android:text="填好 key / 地址 / 模型名后点一下，真发一条最小请求看结果"
             android:textColor="@color/muted"
             android:textSize="12sp" />
 
@@ -278,5 +291,9 @@
             android:text="默认是自动交卷。第一次用建议先打开「只暂存」，确认题库和字体都正常后再关掉。"
             android:textColor="@color/muted"
             android:textSize="12sp" />
+
+        <View
+            android:layout_width="match_parent"
+            android:layout_height="24dp" />
     </LinearLayout>
 </ScrollView>

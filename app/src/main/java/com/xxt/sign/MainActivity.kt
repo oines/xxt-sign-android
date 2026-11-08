@@ -36,6 +36,19 @@ class MainActivity : AppCompatActivity() {
         // 底部高亮必须由 Route 反推，别处直接 showTab 之后也能点回同一个 tab
         binding.bottomNav.setOnItemReselectedListener { item -> routeOf(item.itemId)?.let { showTab(it) } }
 
+        // 日志是二级页：按返回键应该回首页，不能直接退出 App
+        // （真机上从日志页返回会直接回桌面，还会把桌面搜索框唤醒）
+        onBackPressedDispatcher.addCallback(this, object : androidx.activity.OnBackPressedCallback(true) {
+            override fun handleOnBackPressed() {
+            if (currentRoute == Route.LOG) {
+                binding.bottomNav.selectedItemId = R.id.nav_home
+                showTab(Route.HOME)
+            } else {
+                finish()
+            }
+            }
+        })
+
         // 冷启动落在首页（结果面板）；旋转/换主题后回到原来那一页
         val restored = savedInstanceState?.getString(KEY_ROUTE)
             ?.let { name -> Route.entries.firstOrNull { it.name == name } }

@@ -96,11 +96,10 @@ class StudyCourseAdapter(
                     "视频待刷 ${selectedVideoCount}/${videoPendingChapters.size} 章 · 失败 $failedCount 章"
                 else -> "视频待刷 ${selectedVideoCount}/${videoPendingChapters.size} 章"
             }
-            b.tvSub.text = listOfNotNull(
-                item.course.teacher.takeIf { it.isNotBlank() },
-                chapterText,
-                item.course.teacher.takeIf { it.isNotBlank() }?.let { "教师 $it" }
-            ).joinToString(" · ")
+            // 教师名只出现一次（真机上出现过「谭艳艳 · … · 教师 谭艳艳」）
+            val teacher = item.course.teacher.trim()
+            val showTeacher = teacher.isNotBlank() && !item.course.title.contains(teacher)
+            b.tvSub.text = if (showTeacher) "$chapterText · 教师 $teacher" else chapterText
 
             b.btnExpand.text = if (item.expanded) "收起" else "章节"
             b.btnExpand.setOnClickListener { onExpand(item.course) }

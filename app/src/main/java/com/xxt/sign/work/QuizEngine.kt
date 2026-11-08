@@ -107,19 +107,26 @@ class QuizEngine(
             val stem = decode(decoder, q.stem)
             val opts = q.options.map { it.copy(text = decode(decoder, it.text).text) }
             val decodedQ = q.copy(stem = stem.text, options = opts)
-            val weak = stem.weak + q.options.flatMap { decode(decoder, it.text).weak }
+            val weak = (stem.weak + q.options.flatMap { decode(decoder, it.text).weak }).distinct()
             val no = index + 1
 
+            // 容错：整题就那么两三个字认不准时，仍然送去猜，只是结果要标「有 N 个字不确定」。
+            // 真机上出现过「差 2 个字整卷留空」——那是把整份卷判死的过严策略。
+            val totalChars = (stem.text.length + opts.sumOf { it.text.length }).coerceAtLeast(1)
+            val weakRatioOk = weak.size * 100 <= totalChars * MAX_WEAK_PERCENT
+            val tolerableWeak = weak.size <= MAX_WEAK_CHARS && weakRatioOk
+            val weakNote = if (weak.isNotEmpty() && tolerableWeak) "（有 ${weak.size} 个字不确定）" else ""
+
             val answer: QuizAnswer? = when {
-                weak.isNotEmpty() -> null
+                weak.isNotEmpty() && !tolerableWeak -> null
                 provider == null || !provider.configured -> null
                 else -> runCatching { provider.search(decodedQ) }.getOrNull()
             }
 
             when {
-                weak.isNotEmpty() -> {
+                weak.isNotEmpty() && !tolerableWeak -> {
                     val why = stem.reason.ifBlank {
-                        "有 ${weak.distinct().size} 个字认不出来，怕答错，先留着"
+                        "有 ${weak.size} 个字认不出来（占这道题 ${weak.size * 100 / totalChars}%），怕答错，先留着"
                     }
                     log("[测验] 第${no}题 ${WorkQuestion.typeName(q.type)}：$why", false)
                     outcomes.add(
@@ -135,9 +142,15 @@ class QuizEngine(
                 }
                 else -> {
                     submitAnswers[q.qid] = answer.value
-                    log("[测验] 第${no}题 ${WorkQuestion.typeName(q.type)} ← ${answer.source}：${answer.value}", true)
+                    log(
+                        "[测验] 第${no}题 ${WorkQuestion.typeName(q.type)} ← ${answer.source}：${answer.value}$weakNote",
+                        true
+                    )
                     outcomes.add(
-                        QuestionOutcome(q.qid, q.type, WorkParser.shortStem(stem.text), answer.value, answer.source)
+                        QuestionOutcome(
+                            q.qid, q.type, WorkParser.shortStem(stem.text), answer.value,
+                            answer.source + weakNote
+                        )
                     )
                 }
             }
@@ -152,7 +165,10 @@ class QuizEngine(
         if (submitAnswers.isEmpty()) {
             log("[测验] ${job.chapterTitle} · ${page.title} 一题都没答上，不交白卷", false)
             return result(
-                job, false, 0, total, "字认不准或题库没答案，这卷没交", outcomes,
+                job, false, 0, total,
+                "$total 题一题都没答上（字认不准 ${outcomes.count { it.source == "待复核" }} 题，" +
+                    "题库没答案 ${outcomes.count { it.source == "未命中" }} 题），这卷没交",
+                outcomes,
                 hitRate = 0f
             )
         }
@@ -177,10 +193,15 @@ class QuizEngine(
         val bank = outcomes.count { it.answer.isNotBlank() && it.source.startsWith("题库") }
         val byLlm = outcomes.count { it.answer.isNotBlank() && it.source.startsWith("LLM") }
         val blank = (total - submitAnswers.size).coerceAtLeast(0)
+        // 留空的题分两类：字认不准、题库/大模型没答案。别混成一句「没把握」
+        val weakSkipped = outcomes.count { it.source == "待复核" }
+        val missSkipped = (blank - weakSkipped).coerceAtLeast(0)
         val msg = buildString {
             if (submit.ok) append(mode).append("：").append(rateText)
             else append("提交失败：").append(submit.message).append("｜").append(rateText)
-            append("｜答上 ").append(submitAnswers.size).append(" 题 · ").append(blank).append(" 题没把握")
+            append("｜").append(total).append(" 题：").append(submitAnswers.size).append(" 题答上")
+            if (weakSkipped > 0) append("、").append(weakSkipped).append(" 题因字认不准没敢答")
+            if (missSkipped > 0) append("、").append(missSkipped).append(" 题题库没答案")
             if (low) append("｜低置信，建议回看")
         }
         log("[测验] ${job.chapterTitle} · ${page.title} $msg", submit.ok && !low)
@@ -261,6 +282,12 @@ class QuizEngine(
     }
 
     companion object {
+        /** 一道题里最多容忍几个认不准的字（超过就留空） */
+        const val MAX_WEAK_CHARS = 3
+
+        /** 认不准的字最多占整题多少百分比（超过就留空） */
+        const val MAX_WEAK_PERCENT = 10
+
         /** 上一份卷子结束的时间：两卷间隔 ≥ gapSeconds，避免连续交卷 */
         @Volatile
         private var lastFinishAt = 0L

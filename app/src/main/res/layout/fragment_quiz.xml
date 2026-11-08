@@ -58,7 +58,10 @@
                     android:layout_weight="1"
                     android:insetTop="0dp"
                     android:insetBottom="0dp"
-                    android:minHeight="44dp"
+                    android:minHeight="48dp"
+                    android:paddingTop="0dp"
+                    android:paddingBottom="0dp"
+                    android:gravity="center"
                     android:text="扫描" />
 
                 <com.google.android.material.button.MaterialButton
@@ -70,7 +73,7 @@
                     android:layout_weight="1"
                     android:insetTop="0dp"
                     android:insetBottom="0dp"
-                    android:minHeight="44dp"
+                    android:minHeight="48dp"
                     android:text="设置" />
 
                 <com.google.android.material.button.MaterialButton
@@ -83,7 +86,7 @@
                     android:layout_weight="1"
                     android:insetTop="0dp"
                     android:insetBottom="0dp"
-                    android:minHeight="44dp"
+                    android:minHeight="48dp"
                     android:text="开始" />
             </LinearLayout>
 
