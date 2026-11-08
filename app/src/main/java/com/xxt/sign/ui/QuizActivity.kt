@@ -299,7 +299,6 @@ class QuizActivity : AppCompatActivity() {
         v.etLlmKey.setText(Settings.quizLlmKey)
         v.etLlmBaseUrl.setText(Settings.quizLlmBaseUrl)
         v.etLlmModel.setText(Settings.quizLlmModel)
-        v.etLlmLimit.setText(Settings.quizLlmDailyLimit.toString())
 
         // 题库申请/部署入口：点一下跳系统浏览器
         bindLink(v.linkYanxi, "https://tk.enncy.cn/")
@@ -328,7 +327,6 @@ class QuizActivity : AppCompatActivity() {
                     .ifBlank { LlmClient.DEFAULT_BASE_URL }
                 Settings.quizLlmModel = v.etLlmModel.text?.toString()?.trim().orEmpty()
                     .ifBlank { LlmClient.DEFAULT_MODEL }
-                v.etLlmLimit.text?.toString()?.toIntOrNull()?.let { Settings.quizLlmDailyLimit = it }
                 v.etQMin.text?.toString()?.toIntOrNull()?.let { Settings.quizPerQuestionMin = it }
                 v.etQMax.text?.toString()?.toIntOrNull()?.let { Settings.quizPerQuestionMax = it }
                 v.etSMin.text?.toString()?.toIntOrNull()?.let { Settings.quizSubmitWaitMin = it }

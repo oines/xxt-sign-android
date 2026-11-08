@@ -201,11 +201,6 @@ object Settings {
         get() = sp.getString("quizLlmModel", "deepseek-chat") ?: "deepseek-chat"
         set(v) = sp.edit().putString("quizLlmModel", v).apply()
 
-    /** LLM 每天最多调用多少次，超过就这卷只用题库 */
-    var quizLlmDailyLimit: Int
-        get() = sp.getInt("quizLlmDailyLimit", 200).coerceIn(0, 5000)
-        set(v) = sp.edit().putInt("quizLlmDailyLimit", v.coerceIn(0, 5000)).apply()
-
     /** 字体反解的最低相似度，低于它算「待复核」，不采信 */
     var quizFontThreshold: Float
         get() = sp.getFloat("quizFontThreshold", 0.86f).coerceIn(0.5f, 0.99f)

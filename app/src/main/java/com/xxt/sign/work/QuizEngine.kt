@@ -76,8 +76,6 @@ class QuizEngine(
         val outcomes = mutableListOf<QuestionOutcome>()
         val submitAnswers = LinkedHashMap<String, String>()
         val provider = answers
-        // 成本保护：一卷里 LLM 最多调「题量」次
-        provider?.beginPaper(page.questions.size)
 
         page.questions.forEachIndexed { index, q ->
             val stem = decode(decoder, q.stem)

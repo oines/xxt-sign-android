@@ -1,6 +1,5 @@
 package com.xxt.sign.work
 
-import com.xxt.sign.App
 import com.xxt.sign.net.Http
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -11,9 +10,6 @@ import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
 import java.util.concurrent.TimeUnit
 
 /**
@@ -52,7 +48,6 @@ class OkHttpLlmHttp(private val client: OkHttpClient = Http.base) : LlmHttp {
  *  - 只要求模型返回 `{"answer":"A"}` 这种 JSON，temperature=0、max_tokens 很小
  *  - 拿到之后必须过 [LlmFormat] 的格式校验，校验不过就留空，不猜
  *  - 网络失败重试 1 次（单次 20s 超时），还失败就留空，单题失败不影响整卷
- *  - 成本保护：一卷不超过题量、每天不超过设置的上限
  */
 class LlmClient(
     private val apiKey: String,
@@ -60,8 +55,6 @@ class LlmClient(
     private val model: String = DEFAULT_MODEL,
     private val http: LlmHttp = OkHttpLlmHttp(),
     private val timeoutMs: Long = 20_000L,
-    /** 每日配额，单测里注入 { true } 跳过 SharedPreferences */
-    private val quota: () -> Boolean = { LlmQuota.tryConsume() },
     private val retryDelayMs: Long = 800L
 ) {
 
@@ -70,18 +63,10 @@ class LlmClient(
     var lastError: String = ""
         private set
 
-    // 默认不限制；每卷开始时由 beginPaper(题量) 收紧
-    private var paperBudget = Int.MAX_VALUE
-
     val enabled: Boolean get() = apiKey.isNotBlank()
 
     private val endpoint: String
         get() = baseUrl.trim().trimEnd('/').ifBlank { DEFAULT_BASE_URL } + "/chat/completions"
-
-    /** 一卷开始：这一卷最多能调几次（不超过题量） */
-    fun beginPaper(questionCount: Int) {
-        paperBudget = questionCount.coerceAtLeast(0)
-    }
 
     /**
      * 构造请求体。纯函数，方便单测断言 prompt 里包含了题干/选项/题型并且只要 JSON。
@@ -124,16 +109,6 @@ class LlmClient(
             lastError = "未配置 key"
             return@withContext null
         }
-        if (paperBudget <= 0) {
-            lastError = "本卷 LLM 预算用尽"
-            return@withContext null
-        }
-        if (!quota()) {
-            lastError = "达到每日上限 ${LlmQuota.limit()}"
-            return@withContext null
-        }
-        paperBudget--
-
         val body = buildBody(q)
         val headers = mapOf(
             "Authorization" to "Bearer $apiKey",
@@ -276,40 +251,5 @@ object LlmFormat {
             return Check(false, reason = "模型拒答：${s.take(20)}")
         }
         return Check(true, s)
-    }
-}
-
-/**
- * LLM 每日调用上限。
- *
- * 用 SharedPreferences 记「日期 + 已用次数」，跨天自动归零。
- * 超限时 [tryConsume] 返回 false，调用方就只走题库。
- */
-object LlmQuota {
-
-    private const val PREF = "llm_quota"
-
-    private fun sp() = App.ctx.getSharedPreferences(PREF, 0)
-
-    private fun today(): String =
-        SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date())
-
-    fun limit(): Int = runCatching { com.xxt.sign.core.Settings.quizLlmDailyLimit }.getOrDefault(200)
-
-    fun used(): Int {
-        val sp = sp()
-        return if (sp.getString("date", "") == today()) sp.getInt("used", 0) else 0
-    }
-
-    @Synchronized
-    fun tryConsume(): Boolean {
-        val limit = limit()
-        if (limit <= 0) return false
-        val sp = sp()
-        val day = today()
-        val used = if (sp.getString("date", "") == day) sp.getInt("used", 0) else 0
-        if (used >= limit) return false
-        sp.edit().putString("date", day).putInt("used", used + 1).apply()
-        return true
     }
 }

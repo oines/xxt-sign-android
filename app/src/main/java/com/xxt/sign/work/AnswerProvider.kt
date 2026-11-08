@@ -70,11 +70,6 @@ class AnswerProvider(
             Mode.BANK_FIRST -> bankReady || llmReady
         }
 
-    /** 一卷开始：把这一卷的 LLM 预算（不超过题量）重置 */
-    fun beginPaper(questionCount: Int) {
-        llm?.beginPaper(questionCount)
-    }
-
     /** 最近一次 LLM 失败原因，给日志用 */
     val lastLlmError: String get() = llm?.lastError.orEmpty()
 

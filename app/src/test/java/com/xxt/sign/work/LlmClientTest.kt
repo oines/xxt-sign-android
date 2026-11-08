@@ -53,13 +53,12 @@ class LlmClientTest {
         )
     }.toString()
 
-    private fun client(http: LlmHttp, quota: () -> Boolean = { true }) = LlmClient(
+    private fun client(http: LlmHttp) = LlmClient(
         apiKey = "sk-test",
         baseUrl = "https://api.deepseek.com",
         model = "deepseek-chat",
         http = http,
         timeoutMs = 20_000L,
-        quota = quota,
         retryDelayMs = 0
     )
 
@@ -120,24 +119,5 @@ class LlmClientTest {
         assertNull(c.answer(question))
         assertEquals(1, http.calls)
         assertTrue(c.lastError.contains("字母"))
-    }
-
-    @Test
-    fun dailyQuotaStopsCalls() = runBlocking {
-        val http = FakeHttp(mutableListOf(response(ans("A"))))
-        val c = client(http) { false }
-        assertNull(c.answer(question))
-        assertEquals(0, http.calls)
-        assertTrue(c.lastError.contains("上限"))
-    }
-
-    @Test
-    fun paperBudgetIsCappedByQuestionCount() = runBlocking {
-        val http = FakeHttp(mutableListOf(response(ans("A")), response(ans("A"))))
-        val c = client(http)
-        c.beginPaper(1)
-        assertEquals("A", c.answer(question)?.value)
-        assertNull(c.answer(question))
-        assertEquals(1, http.calls)
     }
 }
