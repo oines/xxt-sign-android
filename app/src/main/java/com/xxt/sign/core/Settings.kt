@@ -125,6 +125,16 @@ object Settings {
         get() = sp.getBoolean("quizAfkWarned", false)
         set(v) = sp.edit().putBoolean("quizAfkWarned", v).apply()
 
+    /** 文档任务点要不要自动完成（一次 GET 就完成，默认做） */
+    var studyDocuments: Boolean
+        get() = sp.getBoolean("studyDocuments", true)
+        set(v) = sp.edit().putBoolean("studyDocuments", v).apply()
+
+    /** 正在跑的课程（course.key） */
+    var runningCourses: Set<String>
+        get() = sp.getStringSet("runningCourses", emptySet()) ?: emptySet()
+        set(v) = sp.edit().putStringSet("runningCourses", v).apply()
+
     /** 弹题取题接口模板（真机抓包后填；占位符见 ConfiguredPopQuizBridge） */
     var popQuizFetchUrl: String
         get() = sp.getString("popQuizFetchUrl", "") ?: ""

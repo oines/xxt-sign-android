@@ -540,93 +540,9 @@ class QuizFragment : Fragment() {
     // ------------------------------------------------------------ 设置
 
     private fun showSettings() {
-        val v = DialogQuizSettingsBinding.inflate(layoutInflater)
-        var chosen = providerOptions.firstOrNull { it.value == Settings.quizProvider } ?: providerOptions[1]
-
-        val dropdown = v.etProvider as MaterialAutoCompleteTextView
-        dropdown.setSimpleItems(providerOptions.map { it.label }.toTypedArray())
-        dropdown.setText(chosen.label, false)
-
-        fun syncBankFields() {
-            v.bankFields.visibility = if (chosen.bank) View.VISIBLE else View.GONE
-        }
-        dropdown.setOnItemClickListener { _, _, position, _ ->
-            chosen = providerOptions.getOrElse(position) { providerOptions[1] }
-            syncBankFields()
-            if (v.etEndpoint.text.isNullOrBlank()) v.etEndpoint.setText(defaultEndpointFor(chosen.value))
-        }
-        syncBankFields()
-
-        v.etEndpoint.setText(Settings.quizEndpoint.ifBlank { defaultEndpointFor(chosen.value) })
-        v.etToken.setText(Settings.quizToken)
-        v.etQMin.setText(Settings.quizPerQuestionMin.toString())
-        v.etQMax.setText(Settings.quizPerQuestionMax.toString())
-        v.etSMin.setText(Settings.quizSubmitWaitMin.toString())
-        v.etSMax.setText(Settings.quizSubmitWaitMax.toString())
-        v.etGap.setText(Settings.quizGapSeconds.toString())
-        v.etThreshold.setText(Settings.quizFontThreshold.toString())
-        v.swStoreOnly.isChecked = Settings.quizStoreOnly
-        v.swLlm.isChecked = Settings.quizLlmEnabled
-        v.etLlmKey.setText(Settings.quizLlmKey)
-        v.etLlmBaseUrl.setText(Settings.quizLlmBaseUrl)
-        v.etLlmModel.setText(Settings.quizLlmModel)
-        v.btnTestLlm.setOnClickListener {
-            val key = v.etLlmKey.text?.toString()?.trim().orEmpty()
-            val base = v.etLlmBaseUrl.text?.toString()?.trim().orEmpty()
-            val model = v.etLlmModel.text?.toString()?.trim().orEmpty()
-            if (key.isBlank()) {
-                v.tvLlmTest.text = "先填 key"
-                v.tvLlmTest.setTextColor(requireContext().getColor(com.xxt.sign.R.color.err))
-                return@setOnClickListener
-            }
-            v.tvLlmTest.text = "正在测试…"
-            v.tvLlmTest.setTextColor(requireContext().getColor(com.xxt.sign.R.color.muted))
-            viewLifecycleOwner.lifecycleScope.launch {
-                val probe = com.xxt.sign.work.LlmClient(
-                    apiKey = key,
-                    baseUrl = base.ifBlank { com.xxt.sign.work.LlmClient.DEFAULT_BASE_URL },
-                    model = model.ifBlank { com.xxt.sign.work.LlmClient.DEFAULT_MODEL }
-                ).probe()
-                if (_b == null) return@launch
-                v.tvLlmTest.text = probe.detail
-                v.tvLlmTest.setTextColor(
-                    requireContext().getColor(if (probe.ok) com.xxt.sign.R.color.ok else com.xxt.sign.R.color.err)
-                )
-            }
-        }
-        bindLinks(v.tvLinks)
-
-        MaterialAlertDialogBuilder(requireContext())
-            .setTitle("题库与风控")
-            .setView(v.root)
-            .setPositiveButton("保存") { _, _ ->
-                val provider = chosen.value
-                val endpoint = v.etEndpoint.text?.toString()?.trim().orEmpty()
-                    .ifBlank { defaultEndpointFor(provider) }
-                Settings.quizProvider = provider
-                Settings.quizEndpoint = endpoint
-                Settings.quizToken = v.etToken.text?.toString()?.trim().orEmpty()
-                Settings.quizLlmEnabled = v.swLlm.isChecked
-                Settings.quizLlmKey = v.etLlmKey.text?.toString()?.trim().orEmpty()
-                Settings.quizLlmBaseUrl = v.etLlmBaseUrl.text?.toString()?.trim().orEmpty()
-                    .ifBlank { LlmClient.DEFAULT_BASE_URL }
-                Settings.quizLlmModel = v.etLlmModel.text?.toString()?.trim().orEmpty()
-                    .ifBlank { LlmClient.DEFAULT_MODEL }
-                v.etQMin.text?.toString()?.toIntOrNull()?.let { Settings.quizPerQuestionMin = it }
-                v.etQMax.text?.toString()?.toIntOrNull()?.let { Settings.quizPerQuestionMax = it }
-                v.etSMin.text?.toString()?.toIntOrNull()?.let { Settings.quizSubmitWaitMin = it }
-                v.etSMax.text?.toString()?.toIntOrNull()?.let { Settings.quizSubmitWaitMax = it }
-                v.etGap.text?.toString()?.toIntOrNull()?.let { Settings.quizGapSeconds = it }
-                v.etThreshold.text?.toString()?.toFloatOrNull()?.let { Settings.quizFontThreshold = it }
-                Settings.quizStoreOnly = v.swStoreOnly.isChecked
-                updateMode()
-                toast(if (v.swStoreOnly.isChecked) "已保存（只暂存）" else "已保存（自动提交测验）")
-            }
-            .setNegativeButton("取消", null)
-            .show()
+        QuizSettingsDialog.show(this)
     }
 
-    /** 申请入口收成一行小字，点哪段跳哪 */
     private fun bindLinks(tv: TextView) {
         val items = listOf(
             "言溪" to "https://tk.enncy.cn/",

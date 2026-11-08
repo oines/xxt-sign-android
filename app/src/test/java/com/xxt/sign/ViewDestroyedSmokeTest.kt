@@ -27,16 +27,16 @@ class ViewDestroyedSmokeTest {
         assertNotNull(activity)
 
         // 逐个 tab 切一遍：每个页面都会在自己的 lifecycleScope 里起任务
-        listOf(R.id.nav_quiz, R.id.nav_study, R.id.nav_sign, R.id.nav_accounts, R.id.nav_home)
+        listOf(R.id.nav_accounts, R.id.nav_home)
             .forEach { id ->
                 activity.findViewById<com.google.android.material.bottomnavigation.BottomNavigationView>(R.id.bottomNav)
                     .selectedItemId = id
                 shadowOf(activity.mainLooper).idle()
             }
 
-        // 切到测验页，确保扫描协程已经启动
+        // 切到账号页再回首页：这些页面同样会在协程里更新视图
         activity.findViewById<com.google.android.material.bottomnavigation.BottomNavigationView>(R.id.bottomNav)
-            .selectedItemId = R.id.nav_quiz
+            .selectedItemId = R.id.nav_accounts
         shadowOf(activity.mainLooper).idle()
 
         // 模拟「扫描没跑完就切夜间模式」：视图销毁 / Activity 重建
@@ -62,13 +62,12 @@ class ViewDestroyedSmokeTest {
         val controller = Robolectric.buildActivity(MainActivity::class.java).setup()
         val activity = controller.get()
         val fm = activity.supportFragmentManager
-        activity.findViewById<com.google.android.material.bottomnavigation.BottomNavigationView>(R.id.bottomNav)
-            .selectedItemId = R.id.nav_quiz
-        fm.executePendingTransactions()
 
-        val quiz = fm.fragments.firstOrNull { it.javaClass.simpleName == "QuizFragment" }
-        assertNotNull("测验页没挂上", quiz)
-        assertNotNull(quiz!!.view)
+        // 测验页不再是底栏入口，这里直接挂上去，专门验证它异步回调里的空视图保护
+        val quiz = com.xxt.sign.ui.QuizFragment()
+        fm.beginTransaction().add(R.id.container, quiz, "quiz_probe").commitNow()
+        shadowOf(activity.mainLooper).idle()
+        assertNotNull(quiz.view)
 
         // 模拟「扫描还没结束就切夜间模式」：视图先销毁
         controller.pause().stop().destroy()
@@ -91,7 +90,6 @@ class ViewDestroyedSmokeTest {
             }
         }
 
-        // 状态文案走 uiStatus，同样不能崩
         val uiStatus = quiz.javaClass.getDeclaredMethod("uiStatus", String::class.java)
         uiStatus.isAccessible = true
         try {

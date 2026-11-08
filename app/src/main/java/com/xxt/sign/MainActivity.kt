@@ -1,15 +1,15 @@
 package com.xxt.sign
 
 import android.os.Bundle
+import androidx.lifecycle.lifecycleScope
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import androidx.appcompat.app.AppCompatActivity
 import androidx.fragment.app.Fragment
 import com.xxt.sign.databinding.ActivityMainBinding
 import com.xxt.sign.ui.AccountsFragment
 import com.xxt.sign.ui.HomeFragment
 import com.xxt.sign.ui.LogFragment
-import com.xxt.sign.ui.QuizFragment
-import com.xxt.sign.ui.SignFragment
-import com.xxt.sign.ui.StudyFragment
 
 class MainActivity : AppCompatActivity() {
 
@@ -24,9 +24,6 @@ class MainActivity : AppCompatActivity() {
             val route = when (item.itemId) {
                 R.id.nav_home -> Route.HOME
                 R.id.nav_accounts -> Route.ACCOUNTS
-                R.id.nav_sign -> Route.SIGN
-                R.id.nav_study -> Route.STUDY
-                R.id.nav_quiz -> Route.QUIZ
                 else -> return@setOnItemSelectedListener false
             }
             showTab(route)
@@ -56,6 +53,34 @@ class MainActivity : AppCompatActivity() {
         showTab(restored)
         // 日志页在底栏里没有对应项，别去动选中态（否则会触发监听把内容切走）
         if (restored != Route.LOG) binding.bottomNav.selectedItemId = idOf(restored)
+
+        // 右上角：设置 / 刷新课程 / 日志，界面上不摆第二个按钮
+        binding.toolbar.inflateMenu(R.menu.menu_main)
+        binding.toolbar.setOnMenuItemClickListener { item ->
+            when (item.itemId) {
+                R.id.action_settings -> {
+                    val home = supportFragmentManager.findFragmentByTag(Route.HOME.tag)
+                    if (home != null) {
+                        com.xxt.sign.ui.QuizSettingsDialog.show(home)
+                    } else {
+                        showTab(Route.HOME)
+                        supportFragmentManager.executePendingTransactions()
+                        supportFragmentManager.findFragmentByTag(Route.HOME.tag)
+                            ?.let { com.xxt.sign.ui.QuizSettingsDialog.show(it) }
+                    }
+                    true
+                }
+                R.id.action_refresh -> {
+                    refreshCourses()
+                    true
+                }
+                R.id.action_logs -> {
+                    openLogs()
+                    true
+                }
+                else -> false
+            }
+        }
     }
 
     private var currentRoute: Route = Route.HOME
@@ -63,10 +88,39 @@ class MainActivity : AppCompatActivity() {
     /** 供其它页面跳 tab（例如刷课页的「章节测验」按钮） */
     fun openTab(itemId: Int) {
         val id = when (itemId) {
-            R.id.nav_home, R.id.nav_accounts, R.id.nav_sign, R.id.nav_study, R.id.nav_quiz -> itemId
+            R.id.nav_home, R.id.nav_accounts -> itemId
             else -> R.id.nav_home
         }
         binding.bottomNav.selectedItemId = id
+    }
+
+    /** 右上角「刷新课程」：拉一遍课程 + 章节，首页立刻能看到 */
+    private fun refreshCourses() {
+        val account = com.xxt.sign.core.AccountStore.get(com.xxt.sign.core.Settings.studyAccountId)
+        if (account == null) {
+            android.widget.Toast.makeText(this, "先到账号页加一个账号", android.widget.Toast.LENGTH_SHORT).show()
+            return
+        }
+        android.widget.Toast.makeText(this, "正在刷新课程…", android.widget.Toast.LENGTH_SHORT).show()
+        lifecycleScope.launch {
+            val result = withContext(kotlinx.coroutines.Dispatchers.IO) {
+                runCatching {
+                    val (session, err) = com.xxt.sign.sign.SignEngine.sessionFor(account)
+                    if (session == null) return@runCatching err to null
+                    val api = com.xxt.sign.study.StudyApi(session)
+                    val courses = api.getCourses()
+                    val chapters = mutableMapOf<String, List<com.xxt.sign.study.StudyChapter>>()
+                    courses.forEach { c ->
+                        chapters[c.key] = runCatching { api.getChapters(c) }.getOrDefault(emptyList())
+                    }
+                    com.xxt.sign.study.StudyCourseStore.saveCourses(account.id, courses, chapters)
+                    "" to courses.size
+                }.getOrElse { (it.message ?: "刷新失败") to null }
+            }
+            val toast = if (result.second == null) result.first else "已刷新 ${result.second} 门课程"
+            android.widget.Toast.makeText(this@MainActivity, toast, android.widget.Toast.LENGTH_SHORT).show()
+            showTab(Route.HOME)
+        }
     }
 
     /** 日志是二级页：不在底栏里，从首页/测验页进来 */
@@ -75,20 +129,13 @@ class MainActivity : AppCompatActivity() {
     private fun routeOf(itemId: Int): Route? = when (itemId) {
         R.id.nav_home -> Route.HOME
         R.id.nav_accounts -> Route.ACCOUNTS
-        R.id.nav_sign -> Route.SIGN
-        R.id.nav_study -> Route.STUDY
-        R.id.nav_quiz -> Route.QUIZ
         else -> null
     }
 
     private fun idOf(route: Route): Int = when (route) {
         Route.HOME -> R.id.nav_home
-        Route.ACCOUNTS -> R.id.nav_accounts
-        Route.SIGN -> R.id.nav_sign
-        Route.STUDY -> R.id.nav_study
-        Route.QUIZ -> R.id.nav_quiz
-        // 日志是二级页：底栏没有对应项，随便给个已知 id 不让它崩
-        Route.LOG -> R.id.nav_home
+        // 账号外的页面在底栏里没有对应项，给个已知 id 不让它崩
+        else -> R.id.nav_home
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
@@ -100,9 +147,6 @@ class MainActivity : AppCompatActivity() {
     private enum class Route(val tag: String, val titleRes: Int) {
         HOME("tab_home", R.string.tab_home),
         ACCOUNTS("tab_accounts", R.string.tab_accounts),
-        SIGN("tab_sign", R.string.tab_sign),
-        STUDY("tab_study", R.string.tab_study),
-        QUIZ("tab_quiz", R.string.tab_quiz),
         LOG("tab_log", R.string.tab_log)
     }
 
@@ -114,9 +158,6 @@ class MainActivity : AppCompatActivity() {
         val target: Fragment = fm.findFragmentByTag(route.tag) ?: when (route) {
             Route.HOME -> HomeFragment()
             Route.ACCOUNTS -> AccountsFragment()
-            Route.SIGN -> SignFragment()
-            Route.STUDY -> StudyFragment()
-            Route.QUIZ -> QuizFragment()
             Route.LOG -> LogFragment()
         }
 

@@ -59,6 +59,11 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+        <activity
+            android:name=".ui.CourseActivity"
+            android:exported="false"
+            android:label="课程" />
+
     </application>
 
 </manifest>

@@ -42,6 +42,9 @@ class SessionExpiredException : Exception("会话已失效，请在账号页重�
  */
 class StudyApi(private val session: CxSession) {
 
+    /** 队列里跑测验要复用同一个会话 */
+    val cx: CxSession get() = session
+
     private val c get() = session.pcClient
     private val limiter = RequestLimiter(500L, 200L)
     private val checkLimiter = RequestLimiter(100L, 50L)

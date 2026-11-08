@@ -242,7 +242,8 @@ class MonitorService : Service() {
     }
 
     private fun maybeStartQuizPatrol() {
-        if (!Settings.quizAutoMode) return
+        // 不再有全局开关：只有「有课程在跑」时才做测验巡检
+        if (!com.xxt.sign.study.CourseRunQueue.anyActive()) return
         val acc = AccountStore.get(Settings.studyAccountId) ?: return
         if (System.currentTimeMillis() - Settings.quizLastPatrolAt < Settings.quizPatrolMinutes * 60_000L) return
         if (quizJob?.isActive == true) return
@@ -257,7 +258,7 @@ class MonitorService : Service() {
 
     /** 每轮体检一门课（轮转），把视频缺口排进刷课流水线 */
     private suspend fun maybeSweepCourse() {
-        if (!Settings.quizAutoMode) return
+        if (!com.xxt.sign.study.CourseRunQueue.anyActive()) return
         if (quizLock.isLocked) return
         if (StudyManager.isRunning()) return
         if (System.currentTimeMillis() - Settings.quizLastPatrolAt < Settings.quizPatrolMinutes * 60_000L) return
@@ -391,7 +392,13 @@ class MonitorService : Service() {
         getSystemService(NotificationManager::class.java).notify(NOTIFY_ONGOING, buildOngoing(text))
     }
 
+    /** 签到动态：能自动签的只留一行结果，签不了的才升级成「要你本人」 */
+    private fun publishSignCard(title: String, detail: String) {
+        runCatching { com.xxt.sign.core.SignEvents.publish(this, title, detail) }
+    }
+
     private fun notifyAlert(title: String, text: String, high: Boolean) {
+        if (high) publishSignCard(title, text.lineSequence().firstOrNull().orEmpty())
         val n = NotificationCompat.Builder(this, CHANNEL_ALERT)
             .setSmallIcon(R.drawable.ic_tab_sign)
             .setContentTitle(title)

@@ -6,134 +6,63 @@
     android:orientation="vertical"
     android:padding="12dp">
 
-    <com.google.android.material.card.MaterialCardView
+    <TextView
+        android:id="@+id/tvState"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        app:cardCornerRadius="14dp"
-        app:cardElevation="1dp">
-
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:orientation="vertical"
-            android:padding="16dp">
-
-            <TextView
-                android:id="@+id/tvState"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:text="未开始"
-                android:textSize="22sp"
-                android:textStyle="bold" />
-
-            <com.google.android.material.materialswitch.MaterialSwitch
-                android:id="@+id/swAuto"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="6dp"
-                android:text="挂机模式：交给我，别再问我" />
-
-            <TextView
-                android:id="@+id/tvStatus"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="8dp"
-                android:text="加好账号后打开上面的开关就开始"
-                android:textSize="14sp" />
-
-            <TextView
-                android:id="@+id/tvSummary"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="4dp"
-                android:textColor="@color/muted"
-                android:textSize="13sp"
-                android:text="本周：还没开始" />
-
-            <TextView
-                android:id="@+id/tvGreen"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="6dp"
-                android:textSize="15sp"
-                android:textStyle="bold"
-                android:text="还没体检：点一次下面按钮就知道这门课还差几个任务点" />
-
-            <LinearLayout
-                android:id="@+id/llCourses"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="4dp"
-                android:orientation="vertical" />
-
-            <com.google.android.material.button.MaterialButton
-                android:id="@+id/btnAudit"
-                style="@style/Widget.Material3.Button.TonalButton"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="8dp"
-                android:insetTop="0dp"
-                android:insetBottom="0dp"
-                android:text="体检：这门课还差什么" />
-
-            <com.google.android.material.button.MaterialButton
-                android:id="@+id/btnStop"
-                style="@style/Widget.Material3.Button.OutlinedButton"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="10dp"
-                android:insetTop="0dp"
-                android:insetBottom="0dp"
-                android:text="停止"
-                android:visibility="gone" />
-        </LinearLayout>
-    </com.google.android.material.card.MaterialCardView>
+        android:text="还没登录账号"
+        android:textSize="18sp"
+        android:textStyle="bold" />
 
     <TextView
+        android:id="@+id/tvStatus"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:layout_marginTop="16dp"
-        android:text="需要你本人处理"
+        android:layout_marginTop="2dp"
+        android:textColor="@color/muted"
+        android:textSize="13sp" />
+
+    <TextView
+        android:id="@+id/tvHumanTitle"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="10dp"
+        android:text="要你处理"
         android:textSize="13sp"
-        android:textStyle="bold" />
+        android:textStyle="bold"
+        android:visibility="gone" />
 
     <LinearLayout
         android:id="@+id/llHuman"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:layout_marginTop="4dp"
-        android:orientation="vertical" />
+        android:orientation="vertical"
+        android:visibility="gone" />
 
     <TextView
-        android:id="@+id/tvHumanEmpty"
+        android:id="@+id/tvCoursesTitle"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:text="暂时没有"
+        android:layout_marginTop="12dp"
+        android:text="课程"
+        android:textSize="13sp"
+        android:textStyle="bold" />
+
+    <androidx.recyclerview.widget.RecyclerView
+        android:id="@+id/rvCourses"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_marginTop="6dp"
+        android:layout_weight="1" />
+
+    <TextView
+        android:id="@+id/tvCoursesEmpty"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:gravity="center"
+        android:paddingTop="24dp"
+        android:text="还没有课程\n点右上角「刷新课程」拉一下"
         android:textColor="@color/muted"
-        android:textSize="13sp" />
-
-    <LinearLayout
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="16dp"
-        android:orientation="horizontal">
-
-        <com.google.android.material.button.MaterialButton
-            android:id="@+id/btnQuiz"
-            style="@style/Widget.Material3.Button.TextButton"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:insetTop="0dp"
-            android:insetBottom="0dp"
-            android:text="查看测验明细" />
-
-        <com.google.android.material.button.MaterialButton
-            android:id="@+id/btnLog"
-            style="@style/Widget.Material3.Button.TextButton"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:insetTop="0dp"
-            android:insetBottom="0dp"
-            android:text="查看日志" />
-    </LinearLayout>
+        android:textSize="14sp"
+        android:visibility="gone" />
 </LinearLayout>

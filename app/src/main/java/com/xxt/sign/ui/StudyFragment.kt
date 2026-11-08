@@ -253,12 +253,8 @@ class StudyFragment : Fragment() {
 
     /** 测验已经是底部 tab 了，这里只负责把用户送过去 */
     private fun openQuiz() {
-        val act = activity as? com.xxt.sign.MainActivity
-        if (act == null) {
-            toast("打开底部「测验」页即可")
-            return
-        }
-        act.openTab(R.id.nav_quiz)
+        // 测验不再是独立 tab：跟着课程页走
+        toast("回首页点一门课，按「开始」就会连测验一起做")
     }
 
     // ------------------------------------------------------------ 课程
