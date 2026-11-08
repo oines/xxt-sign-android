@@ -39,8 +39,10 @@ class AnswerProvider(
      */
     private val effective: String
         get() = when (provider.trim().lowercase()) {
-            "", "auto", "none" -> "lemon"
-            "off", "disable" -> "off"
+            // 留空 / off / none → 明确不查题库，只暂存
+            "", "off", "disable", "none" -> "off"
+            // auto → 内置免费源
+            "auto" -> "lemon"
             else -> provider.trim().lowercase()
         }
 

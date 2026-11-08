@@ -23,6 +23,28 @@
                 android:inputType="text" />
         </com.google.android.material.textfield.TextInputLayout>
 
+        <TextView
+            android:id="@+id/linkTikuAdapter"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="2dp"
+            android:clickable="true"
+            android:focusable="true"
+            android:paddingVertical="2dp"
+            android:text="tikuAdapter（自建）：github.com/DokiDoki1103/tikuAdapter"
+            android:textColor="#1A73E8"
+            android:textSize="12sp" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="2dp"
+            android:text="留空 / 填 off 则不查题库，只做暂存"
+            android:textColor="@color/muted"
+            android:textSize="12sp" />
+
+
+
         <com.google.android.material.textfield.TextInputLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
@@ -36,6 +58,32 @@
                 android:inputType="textUri" />
         </com.google.android.material.textfield.TextInputLayout>
 
+        <TextView
+            android:id="@+id/linkYanxi"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="2dp"
+            android:clickable="true"
+            android:focusable="true"
+            android:paddingVertical="2dp"
+            android:text="言溪题库（申请 token）：tk.enncy.cn"
+            android:textColor="#1A73E8"
+            android:textSize="12sp" />
+
+        <TextView
+            android:id="@+id/linkLemon"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="2dp"
+            android:clickable="true"
+            android:focusable="true"
+            android:paddingVertical="2dp"
+            android:text="柠檬题库（申请 token）：lemtk.xyz"
+            android:textColor="#1A73E8"
+            android:textSize="12sp" />
+
+
+
         <com.google.android.material.textfield.TextInputLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
@@ -48,6 +96,44 @@
                 android:layout_height="wrap_content"
                 android:inputType="text" />
         </com.google.android.material.textfield.TextInputLayout>
+
+        <TextView
+            android:id="@+id/linkYanxiToken"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="2dp"
+            android:clickable="true"
+            android:focusable="true"
+            android:paddingVertical="2dp"
+            android:text="拿言溪 token → tk.enncy.cn"
+            android:textColor="#1A73E8"
+            android:textSize="12sp" />
+
+        <TextView
+            android:id="@+id/linkLemonToken"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="2dp"
+            android:clickable="true"
+            android:focusable="true"
+            android:paddingVertical="2dp"
+            android:text="拿柠檬 token → lemtk.xyz"
+            android:textColor="#1A73E8"
+            android:textSize="12sp" />
+
+        <TextView
+            android:id="@+id/linkTikuToken"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="0dp"
+            android:clickable="true"
+            android:focusable="true"
+            android:paddingVertical="2dp"
+            android:text="tikuAdapter 部署与 token → GitHub"
+            android:textColor="#1A73E8"
+            android:textSize="12sp" />
+
+
 
         <LinearLayout
             android:layout_width="match_parent"

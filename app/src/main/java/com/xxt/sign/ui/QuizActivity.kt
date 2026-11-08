@@ -2,8 +2,11 @@ package com.xxt.sign.ui
 
 import android.content.Context
 import android.content.Intent
+import android.graphics.Paint
+import android.net.Uri
 import android.os.Bundle
 import android.view.View
+import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
@@ -274,7 +277,10 @@ class QuizActivity : AppCompatActivity() {
     private fun showSettings() {
         val v = DialogQuizSettingsBinding.inflate(layoutInflater)
         v.etProvider.setText(Settings.quizProvider)
-        v.etEndpoint.setText(Settings.quizEndpoint)
+        // 言溪 / 柠檬 的端点固定，类型填对了就不用再查一遍域名
+        v.etEndpoint.setText(
+            Settings.quizEndpoint.ifBlank { defaultEndpointFor(Settings.quizProvider) }
+        )
         v.etToken.setText(Settings.quizToken)
         v.etQMin.setText(Settings.quizPerQuestionMin.toString())
         v.etQMax.setText(Settings.quizPerQuestionMax.toString())
@@ -284,13 +290,25 @@ class QuizActivity : AppCompatActivity() {
         v.etThreshold.setText(Settings.quizFontThreshold.toString())
         v.swStoreOnly.isChecked = Settings.quizStoreOnly
 
+        // 题库申请/部署入口：点一下跳系统浏览器
+        bindLink(v.linkYanxi, "https://tk.enncy.cn/")
+        bindLink(v.linkYanxiToken, "https://tk.enncy.cn/")
+        bindLink(v.linkLemon, "https://lemtk.xyz/")
+        bindLink(v.linkLemonToken, "https://lemtk.xyz/")
+        bindLink(v.linkTikuAdapter, "https://github.com/DokiDoki1103/tikuAdapter")
+        bindLink(v.linkTikuToken, "https://github.com/DokiDoki1103/tikuAdapter")
+
         MaterialAlertDialogBuilder(this)
             .setTitle("题库与风控")
             .setView(v.root)
             .setPositiveButton("保存") { _, _ ->
-                val provider = v.etProvider.text?.toString()?.trim().orEmpty().ifBlank { "none" }
+                val provider = v.etProvider.text?.toString()?.trim()?.lowercase().orEmpty()
+                    .ifBlank { "off" }
+                val endpoint = v.etEndpoint.text?.toString()?.trim().orEmpty()
+                    .ifBlank { defaultEndpointFor(provider) }
                 Settings.quizProvider = provider
-                Settings.quizEndpoint = v.etEndpoint.text?.toString()?.trim().orEmpty()
+                Settings.quizEndpoint = endpoint
+                v.etEndpoint.setText(endpoint)
                 Settings.quizToken = v.etToken.text?.toString()?.trim().orEmpty()
                 v.etQMin.text?.toString()?.toIntOrNull()?.let { Settings.quizPerQuestionMin = it }
                 v.etQMax.text?.toString()?.toIntOrNull()?.let { Settings.quizPerQuestionMax = it }
@@ -309,6 +327,23 @@ class QuizActivity : AppCompatActivity() {
     // ------------------------------------------------------------ 工具
 
     private fun toast(msg: String) = Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
+
+    /** 言溪 / 柠檬的地址是固定的，类型写对就能直接用 */
+    private fun defaultEndpointFor(provider: String): String = when (provider.trim().lowercase()) {
+        "yanxi" -> "tk.enncy.cn"
+        "lemon" -> "lemtk.xyz"
+        "auto" -> "" // 内置源自带默认地址
+        else -> ""
+    }
+
+    /** 点开跳系统浏览器，不内嵌 WebView */
+    private fun bindLink(tv: TextView, url: String) {
+        tv.paintFlags = tv.paintFlags or Paint.UNDERLINE_TEXT_FLAG
+        tv.setOnClickListener {
+            runCatching { startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url))) }
+                .onFailure { toast("没有可用的浏览器") }
+        }
+    }
 
     /** 从刷课页带过来的章节清单 */
     data class ChapterRef(
