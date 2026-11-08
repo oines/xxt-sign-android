@@ -178,7 +178,7 @@ class QuizFragment : Fragment() {
         chapters.addAll(refs)
         b.tvEmpty.text = when {
             refs.isEmpty() -> "还没有课程缓存\n点「扫描」会自动拉一遍全部课程的章节"
-            else -> "已缓存 ${snapshot?.courses?.size ?: 0} 门课 / ${refs.size} 个章节\n点「扫描」看看有哪些章节测验"
+            else -> "扫到 ${snapshot?.courses?.size ?: 0} 门课 / ${refs.size} 个章节\n点「扫描」看看有哪些章节测验"
         }
         updateEmpty()
     }
@@ -262,9 +262,13 @@ class QuizFragment : Fragment() {
 
     private fun updateMode() {
         if (_b == null) return
-        val submit = if (Settings.quizStoreOnly) "只暂存" else "自动交卷"
-        val auto = if (Settings.quizAutoMode) "挂机开启（每 ${Settings.quizPatrolMinutes} 分钟巡检）" else "挂机关闭，仅手动"
-        b.tvMode.text = "当前：$auto · $submit"
+        b.tvMode.text = if (Settings.quizAutoMode) {
+            // 只有挂机开着的时候「自动交卷」才有意义，否则读起来自相矛盾
+            val submit = if (Settings.quizStoreOnly) "只暂存" else "自动交卷"
+            "当前：挂机开启（每 ${Settings.quizPatrolMinutes} 分钟巡检） · $submit"
+        } else {
+            "当前：挂机关闭，仅手动"
+        }
     }
 
     // ------------------------------------------------------------ 扫描
@@ -279,12 +283,15 @@ class QuizFragment : Fragment() {
         b.progress.visibility = View.VISIBLE
         b.progress.isIndeterminate = true
         b.tvStep.visibility = View.GONE
+        b.tvEmpty.text = "正在扫描全部章节…"
+        b.btnEmptyScan.text = "扫描中…"
 
         viewLifecycleOwner.lifecycleScope.launch {
             try {
                 val (session, err) = withContext(Dispatchers.IO) { SignEngine.sessionFor(account) }
                 if (session == null) {
                     uiStatus("登录失败：$err")
+                    if (_b != null) b.btnEmptyScan.text = "重新扫描"
                     return@launch
                 }
                 val studyApi = StudyApi(session)
@@ -295,6 +302,7 @@ class QuizFragment : Fragment() {
                 val scope = ensureAllChapters(studyApi, account.id)
                 if (scope.isEmpty()) {
                     uiStatus("没读到课程或章节，检查一下网络")
+                    if (_b != null) b.btnEmptyScan.text = "重新扫描"
                     return@launch
                 }
                 // 一遍扫完可能几十章，边扫边把结果铺出来，不用等全部结束
@@ -338,12 +346,20 @@ class QuizFragment : Fragment() {
                     }
                 }
 
+                val scannedCourses = scope.map { it.courseId }.distinct().size
+                val todo = found.count { !it.submitted }
+                if (_b != null) {
+                    b.btnEmptyScan.text = "重新扫描"
+                    b.tvEmpty.text = when {
+                        found.isEmpty() -> "扫完 ${scannedCourses} 门课 / ${scope.size} 个章节，没有章节测验\n点「重新扫描」可以再扫一次"
+                        else -> "共扫到 ${found.size} 份测验（$todo 份还没做），已全部列在上面\n勾选后点「开始」"
+                    }
+                }
                 uiStatus(
                     if (found.isEmpty()) {
-                        "全部 ${scope.size} 个章节里没有章节测验"
+                        "扫完 ${scannedCourses} 门课 / ${scope.size} 个章节：没有章节测验"
                     } else {
-                        val todo = found.count { !it.submitted }
-                        "全部 ${scope.size} 个章节里发现 ${found.size} 个测验（$todo 个还没做），勾选后点「开始」"
+                        "共扫到 ${found.size} 份测验（$todo 份还没做）"
                     }
                 )
             } finally {
@@ -407,6 +423,7 @@ class QuizFragment : Fragment() {
                 val (session, err) = withContext(Dispatchers.IO) { SignEngine.sessionFor(account) }
                 if (session == null) {
                     uiStatus("登录失败：$err")
+                    if (_b != null) b.btnEmptyScan.text = "重新扫描"
                     return@launch
                 }
 

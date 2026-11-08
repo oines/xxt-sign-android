@@ -25,7 +25,11 @@ class StudyEngine(
     private val api: StudyApi,
     private val plan: StudyPlan,
     private val onState: (StudyState) -> Unit,
-    private val onTask: (StudyTaskItem) -> Unit
+    private val onTask: (StudyTaskItem) -> Unit,
+    /** 每个视频一个弹题桥；没抓包/没配置时返回 [PopQuizBridge.NONE] */
+    private val popQuizBridge: (StudyCourse, VideoJob) -> PopQuizBridge = { _, _ -> PopQuizBridge.NONE },
+    /** 弹题作答：复用章节测验那条「题库优先 + 大模型兜底」链路 */
+    private val popQuizSolver: suspend (PopQuizQuestion) -> String = { "" }
 ) {
     private val done = AtomicInteger(0)
     private val failed = AtomicInteger(0)
@@ -150,7 +154,7 @@ class StudyEngine(
         }
 
         var allOk = true
-        jobs.jobs.forEachIndexed { index, job ->
+        videoLoop@ for ((index, job) in jobs.jobs.withIndex()) {
             currentCoroutineContext().ensureActive()
             LogStore.add(
                 "[刷课] ${course.title} · ${chapter.title} · ${job.name}" +
@@ -179,25 +183,32 @@ class StudyEngine(
                 )
             }
 
+            // 弹题统计要进任务卡片和日志：视频中途弹题 2 道，答上 1 道
+            val message = result.messageWithPop()
             if (result.ok) {
                 onTask(
                     base.copy(
                         status = StudyTaskStatus.DONE,
                         progress = 100,
-                        message = result.message
+                        message = message
                     )
                 )
-                LogStore.add("[刷课] 视频完成：${job.name}", true)
+                LogStore.add("[刷课] 视频完成：${job.name}" + if (message != "完成") "（$message）" else "", true)
             } else {
                 allOk = false
                 onTask(
                     base.copy(
                         status = StudyTaskStatus.FAILED,
                         progress = maxOf(lastProgress, result.progress),
-                        message = result.message
+                        message = message
                     )
                 )
-                LogStore.add("[刷课] 视频未完成：${job.name}（${result.message}）", false)
+                LogStore.add("[刷课] 视频未完成：${job.name}（$message）", false)
+                // 卡在弹题 = 需要本人，不是普通失败；别让它在重试里空转
+                if (result.needsHuman) {
+                    LogStore.add("[刷课] ${job.name}：这道弹题没答上，视频可能停在这里，已跳过", false)
+                    break@videoLoop
+                }
             }
         }
         return if (allOk) ChapterOutcome.DONE else ChapterOutcome.ERROR
@@ -251,6 +262,28 @@ class StudyEngine(
         var endNotified = false
         var endStartedAt = 0L
 
+        // ---------------- 视频中途弹题 ----------------
+        // 学习通会在播放到某个点弹题，答不对视频不往下播。这里每 10 秒问一次接口，
+        // 解出来就答；答不上/没接口就让播放进度自己说话（连续不动 = 卡住了）。
+        val bridge = popQuizBridge(course, job)
+        var popTotal = 0
+        var popAnswered = 0
+        var popTimedOut = false
+        var popGaveUp: String? = null
+        var lastPollAt = 0L
+        var lastPlayTimeSeen = playTime
+        var stallRounds = 0
+        var quizDeadline = 0L
+
+        fun popResult() = PopQuizResult(
+            total = popTotal,
+            answered = popAnswered,
+            skipped = popTotal - popAnswered,
+            timedOut = popTimedOut,
+            needsHuman = popGaveUp != null,
+            attempts = emptyList()
+        )
+
         while (currentCoroutineContext().isActive) {
             val now = System.currentTimeMillis()
 
@@ -277,7 +310,12 @@ class StudyEngine(
                 when {
                     r.passed -> {
                         onProgress(100, "完成")
-                        return VideoRunResult(true, 100, "完成")
+                        return VideoRunResult(
+                            ok = true,
+                            progress = 100,
+                            message = "完成",
+                            popQuiz = popResult()
+                        )
                     }
 
                     r.code == 403 -> {
@@ -349,6 +387,81 @@ class StudyEngine(
                 lastTick = tickNow
                 emitProgress()
             }
+
+            // ---- 弹题轮询 ----
+            if (tickNow - lastPollAt >= POP_POLL_INTERVAL_MS) {
+                lastPollAt = tickNow
+                if (playTime > lastPlayTimeSeen) {
+                    lastPlayTimeSeen = playTime
+                    stallRounds = 0
+                } else {
+                    stallRounds++
+                }
+
+                val questions = if (bridge.configured) {
+                    runCatching { bridge.poll(job, playTime) }.getOrDefault(emptyList())
+                } else {
+                    emptyList()
+                }
+
+                if (questions.isEmpty()) {
+                    val outcome = PopQuizPolicy.decide(
+                        bridge, emptyList(), emptyList(), timedOut = false, stalledRounds = stallRounds
+                    )
+                    (outcome.decision as? PopQuizDecision.GiveUp)?.let { giveUp ->
+                        popGaveUp = giveUp.reason
+                        LogStore.add("[刷课] ${job.name}：${giveUp.reason}", false)
+                        onProgress(lastPercent.coerceAtLeast(0), "卡在弹题，标为需要人工")
+                        return VideoRunResult(
+                            ok = false,
+                            progress = lastPercent.coerceAtLeast(0),
+                            message = giveUp.reason,
+                            needsHuman = true,
+                            popQuiz = popResult()
+                        )
+                    }
+                } else {
+                    if (quizDeadline == 0L) quizDeadline = tickNow + POP_QUIZ_TIMEOUT_MS
+                    val answers = questions.map { q ->
+                        val left = quizDeadline - System.currentTimeMillis()
+                        val ans = if (left > 0) {
+                            kotlinx.coroutines.withTimeoutOrNull(left) { popQuizSolver(q) } ?: ""
+                        } else ""
+                        if (ans.isNotBlank()) {
+                            runCatching { bridge.submit(job, q, ans) }.getOrDefault(false)
+                            ans
+                        } else ""
+                    }
+                    val fresh = questions.zip(answers).filter { it.second.isNotBlank() }
+                    popTotal += questions.size
+                    popAnswered += fresh.size
+                    val timedOut = tickNow >= quizDeadline
+                    popTimedOut = popTimedOut || timedOut
+
+                    LogStore.add(
+                        "[刷课] ${job.name}：视频中途弹题 ${questions.size} 道，答上 ${fresh.size} 道" +
+                            if (timedOut) "（超时）" else "",
+                        fresh.size == questions.size
+                    )
+
+                    val outcome = PopQuizPolicy.decide(
+                        bridge, questions, answers, timedOut = timedOut, stalledRounds = stallRounds
+                    )
+                    (outcome.decision as? PopQuizDecision.GiveUp)?.let { giveUp ->
+                        popGaveUp = giveUp.reason
+                        LogStore.add("[刷课] ${job.name}：${giveUp.reason}", false)
+                        return VideoRunResult(
+                            ok = false,
+                            progress = lastPercent.coerceAtLeast(0),
+                            message = giveUp.reason,
+                            needsHuman = true,
+                            popQuiz = popResult()
+                        )
+                    }
+                    if (fresh.size == questions.size) quizDeadline = 0L
+                }
+            }
+
             delay(1000)
         }
         return VideoRunResult(false, lastPercent.coerceAtLeast(0), "已取消")
@@ -392,6 +505,12 @@ class StudyEngine(
         private const val MAX_TRIES = 5
         private const val MAX_FORBIDDEN_RETRY = 2
         private const val RETRY_INTERVAL_MS = 1000L
+
+        /** 弹题轮询间隔 */
+        private const val POP_POLL_INTERVAL_MS = 10_000L
+
+        /** 一道弹题最多给多久（答不上就跳过，别把整门课卡死） */
+        private const val POP_QUIZ_TIMEOUT_MS = 60_000L
 
         /** 客户端进度到 100% 后，最多再等服务端确认多久 */
         private const val END_TIMEOUT_MS = 3 * 60 * 1000L

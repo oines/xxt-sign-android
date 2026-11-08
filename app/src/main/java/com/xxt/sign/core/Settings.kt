@@ -125,6 +125,16 @@ object Settings {
         get() = sp.getBoolean("quizAfkWarned", false)
         set(v) = sp.edit().putBoolean("quizAfkWarned", v).apply()
 
+    /** 弹题取题接口模板（真机抓包后填；占位符见 ConfiguredPopQuizBridge） */
+    var popQuizFetchUrl: String
+        get() = sp.getString("popQuizFetchUrl", "") ?: ""
+        set(v) = sp.edit().putString("popQuizFetchUrl", v).apply()
+
+    /** 弹题提交接口模板 */
+    var popQuizSubmitUrl: String
+        get() = sp.getString("popQuizSubmitUrl", "") ?: ""
+        set(v) = sp.edit().putString("popQuizSubmitUrl", v).apply()
+
     /** 最近一次成功的定位，位置签到用它兜底 */
     var lastGoodLat: String
         get() = sp.getString("lastGoodLat", "") ?: ""

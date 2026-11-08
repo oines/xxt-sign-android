@@ -80,7 +80,20 @@ data class StudyPlan(
     val speed: Float
 )
 
-data class VideoRunResult(val ok: Boolean, val progress: Int, val message: String)
+data class VideoRunResult(
+    val ok: Boolean,
+    val progress: Int,
+    val message: String,
+    /** 卡在弹题/需要本人处理，不算普通失败 */
+    val needsHuman: Boolean = false,
+    val popQuiz: PopQuizResult? = null
+) {
+    /** 写进任务卡片/日志的一句话 */
+    fun messageWithPop(): String {
+        val extra = popQuiz?.summary().orEmpty()
+        return if (extra.isBlank()) message else "$message · $extra"
+    }
+}
 
 /** 刷课进度（UI / 通知共用） */
 data class StudyState(
