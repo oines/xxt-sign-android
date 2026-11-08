@@ -116,6 +116,20 @@ object Settings {
         get() = sp.getBoolean("quizAutoMode", true)
         set(v) = sp.edit().putBoolean("quizAutoMode", v).apply()
 
+    /** 是否已经向用户解释过"挂机会替你交卷" */
+    var quizAfkWarned: Boolean
+        get() = sp.getBoolean("quizAfkWarned", false)
+        set(v) = sp.edit().putBoolean("quizAfkWarned", v).apply()
+
+    /** 最近一次成功的定位，位置签到用它兜底 */
+    var lastGoodLat: String
+        get() = sp.getString("lastGoodLat", "") ?: ""
+        set(v) = sp.edit().putString("lastGoodLat", v).apply()
+
+    var lastGoodLon: String
+        get() = sp.getString("lastGoodLon", "") ?: ""
+        set(v) = sp.edit().putString("lastGoodLon", v).apply()
+
     /** 题库来源：auto（内置免费源）/ tikuadapter / yanxi / lemon / off */
     var quizProvider: String
         get() = sp.getString("quizProvider", QUIZ_AUTO) ?: QUIZ_AUTO

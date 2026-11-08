@@ -515,8 +515,9 @@ class CxApi(private val s: CxSession) {
             .ifBlank { detail.strAny("locationLongitude", "longitude") }
         if (ok(lat) && ok(lon)) return SignLocation(address, lat, lon)
 
-        val uLat = com.xxt.sign.core.Settings.latitude
-        val uLon = com.xxt.sign.core.Settings.longitude
+        val s = com.xxt.sign.core.Settings
+        val uLat = s.latitude.ifBlank { s.lastGoodLat }
+        val uLon = s.longitude.ifBlank { s.lastGoodLon }
         if (ok(uLat) && ok(uLon)) {
             val uAddr = com.xxt.sign.core.Settings.address.ifBlank { address }
             return SignLocation(uAddr, uLat, uLon)

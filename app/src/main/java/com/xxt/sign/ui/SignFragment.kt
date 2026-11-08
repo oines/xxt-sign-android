@@ -643,6 +643,8 @@ class SignFragment : Fragment() {
                 return@show
             }
 
+            Settings.lastGoodLat = lat
+            Settings.lastGoodLon = lon
             Settings.latitude = lat
             Settings.longitude = lon
             Settings.address = addr
@@ -911,9 +913,24 @@ class SignFragment : Fragment() {
         return if (f.isEmpty()) "全部课程" else "${f.size} 个课堂"
     }
 
+    /** 可用坐标：已保存 → 上次签成功的坐标 → 空 */
+    private fun effectiveLat() = Settings.latitude.ifBlank { Settings.lastGoodLat }
+    private fun effectiveLon() = Settings.longitude.ifBlank { Settings.lastGoodLon }
+
     private fun refreshOptions() {
+        val lat = effectiveLat()
+        val lon = effectiveLon()
+        val hasLoc = lat.isNotBlank() && lon.isNotBlank()
+        b.btnSignAll.isEnabled = hasLoc
+        b.btnSignAll.alpha = if (hasLoc) 1f else 0.5f
         b.tvOptions.text = buildString {
-            append("位置：").append(locSummary())
+            append("位置：").append(
+                when {
+                    Settings.latitude.isNotBlank() -> locSummary()
+                    lat.isNotBlank() -> "用上次签到的坐标（$lat, $lon）"
+                    else -> "还没设置，位置签到现在点不了"
+                }
+            )
             append("　｜　拍照：").append(if (Settings.photoPath.isBlank()) "未选" else "已选")
             append('\n')
             append("课堂：").append(courseSummary())

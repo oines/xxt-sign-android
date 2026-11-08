@@ -45,6 +45,26 @@ class HomeFragment : Fragment() {
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
         b.swAuto.isChecked = Settings.quizAutoMode
         b.swAuto.setOnCheckedChangeListener { _, on ->
+            if (on && !Settings.quizAfkWarned) {
+                // 第一次打开：说清楚它会替你交卷，确认一次以后不再问
+                com.google.android.material.dialog.MaterialAlertDialogBuilder(requireContext())
+                    .setTitle("打开挂机后，它会替你交卷")
+                    .setMessage(
+                        "开启后 App 会自动做视频、章节测验和签到，测验会直接提交到学习通，不再逐份问你。\n\n" +
+                            "不放心的话，可以先到「测验 → 设置」里打开「只暂存」，确认没问题再关掉。"
+                    )
+                    .setPositiveButton("知道了，开始") { _, _ ->
+                        Settings.quizAfkWarned = true
+                        Settings.quizAutoMode = true
+                        MonitorService.start(requireContext())
+                        render()
+                    }
+                    .setNegativeButton("先不用", null)
+                    .setOnCancelListener { render() }
+                    .show()
+                b.swAuto.isChecked = false
+                return@setOnCheckedChangeListener
+            }
             Settings.quizAutoMode = on
             if (on) MonitorService.start(requireContext()) else MonitorService.stop(requireContext())
             render()
@@ -55,7 +75,7 @@ class HomeFragment : Fragment() {
             render()
         }
         b.btnQuiz.setOnClickListener { (activity as? MainActivity)?.openTab(R.id.nav_quiz) }
-        b.btnLog.setOnClickListener { (activity as? MainActivity)?.openTab(R.id.nav_log) }
+        b.btnLog.setOnClickListener { (activity as? MainActivity)?.openLogs() }
 
         viewLifecycleOwner.lifecycleScope.launch {
             viewLifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
@@ -94,7 +114,9 @@ class HomeFragment : Fragment() {
             else -> "挂机中 · 待命中"
         }
         b.swAuto.isChecked = auto
-        b.btnStop.visibility = if (running || MonitorService.running) View.VISIBLE else View.GONE
+        // 「停止」常驻：任何会写数据的动作都要能一键停下
+        b.btnStop.visibility = View.VISIBLE
+        b.btnStop.isEnabled = running || MonitorService.running || auto
 
         b.tvStatus.text = when {
             quiz.running && quiz.text.isNotBlank() -> quiz.text

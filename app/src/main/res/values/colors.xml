@@ -4,6 +4,11 @@
     <color name="accent">#FF7043</color>
     <color name="ok">#2E7D32</color>
     <color name="err">#C62828</color>
-    <color name="muted">#757575</color>
+    <!-- 次要文字：浅色模式偏灰，深色模式在 values-night 里覆盖成浅灰 -->
+    <color name="muted">#5F6663</color>
+    <!-- 主色上的文字：必须显式给，否则深色主色 + 深色文字会糊成一片 -->
+    <color name="on_primary">#FFFFFF</color>
+    <color name="on_primary_dark">#FFFFFF</color>
+    <color name="surface_variant_text">#5F6663</color>
     <color name="study_blue">#1565C0</color>
 </resources>

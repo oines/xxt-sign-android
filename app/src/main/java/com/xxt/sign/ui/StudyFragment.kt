@@ -767,11 +767,12 @@ class StudyFragment : Fragment() {
     }
 
     private fun updateCoursesHeader() {
-        val courseCount = items.count { it.selectedChapters.isNotEmpty() }
+        val total = items.size
+        val selectedCourses = items.count { it.selectedChapters.isNotEmpty() }
         val chapterCount = items.sumOf { it.selectedChapters.size }
         b.tvCourses.text = when {
-            items.isEmpty() -> "未获取课程"
-            else -> "已选 $chapterCount 章 / $courseCount 门课"
+            total == 0 -> "未获取课程"
+            else -> "已选 $chapterCount 章（$selectedCourses/$total 门课）"
         }
         updateFetchButton()
     }

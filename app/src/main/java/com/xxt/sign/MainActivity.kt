@@ -21,67 +21,102 @@ class MainActivity : AppCompatActivity() {
         setContentView(binding.root)
 
         binding.bottomNav.setOnItemSelectedListener { item ->
-            showTab(item.itemId)
+            val route = when (item.itemId) {
+                R.id.nav_home -> Route.HOME
+                R.id.nav_accounts -> Route.ACCOUNTS
+                R.id.nav_sign -> Route.SIGN
+                R.id.nav_study -> Route.STUDY
+                R.id.nav_quiz -> Route.QUIZ
+                else -> return@setOnItemSelectedListener false
+            }
+            showTab(route)
             true
         }
 
-        // 先放第一个页面，再设置选中项；showTab 用 tag 查找保证幂等
-        showTab(R.id.nav_home)
-        binding.bottomNav.selectedItemId = R.id.nav_home
+        // 底部高亮必须由 Route 反推，别处直接 showTab 之后也能点回同一个 tab
+        binding.bottomNav.setOnItemReselectedListener { item -> routeOf(item.itemId)?.let { showTab(it) } }
+
+        // 冷启动落在首页（结果面板）；旋转/换主题后回到原来那一页
+        val restored = savedInstanceState?.getString(KEY_ROUTE)
+            ?.let { name -> Route.entries.firstOrNull { it.name == name } }
+            ?: Route.HOME
+        showTab(restored)
+        // 日志页在底栏里没有对应项，别去动选中态（否则会触发监听把内容切走）
+        if (restored != Route.LOG) binding.bottomNav.selectedItemId = idOf(restored)
     }
+
+    private var currentRoute: Route = Route.HOME
 
     /** 供其它页面跳 tab（例如刷课页的「章节测验」按钮） */
     fun openTab(itemId: Int) {
-        binding.bottomNav.selectedItemId = itemId
+        val id = when (itemId) {
+            R.id.nav_home, R.id.nav_accounts, R.id.nav_sign, R.id.nav_study, R.id.nav_quiz -> itemId
+            else -> R.id.nav_home
+        }
+        binding.bottomNav.selectedItemId = id
     }
 
-    /** 用 tag 查找已存在的 Fragment，避免重建时重复 add；commitNow 保证同步生效 */
-    private fun showTab(itemId: Int) {
-        val tag = when (itemId) {
-            R.id.nav_home -> TAG_HOME
-            R.id.nav_accounts -> TAG_ACCOUNTS
-            R.id.nav_sign -> TAG_SIGN
-            R.id.nav_study -> TAG_STUDY
-            R.id.nav_quiz -> TAG_QUIZ
-            R.id.nav_log -> TAG_LOG
-            else -> return
-        }
+    /** 日志是二级页：不在底栏里，从首页/测验页进来 */
+    fun openLogs() = showTab(Route.LOG)
 
-        binding.toolbar.title = when (itemId) {
-            R.id.nav_home -> getString(R.string.tab_home)
-            R.id.nav_accounts -> getString(R.string.tab_accounts)
-            R.id.nav_sign -> getString(R.string.tab_sign)
-            R.id.nav_study -> getString(R.string.tab_study)
-            R.id.nav_quiz -> getString(R.string.tab_quiz)
-            else -> getString(R.string.tab_log)
-        }
+    private fun routeOf(itemId: Int): Route? = when (itemId) {
+        R.id.nav_home -> Route.HOME
+        R.id.nav_accounts -> Route.ACCOUNTS
+        R.id.nav_sign -> Route.SIGN
+        R.id.nav_study -> Route.STUDY
+        R.id.nav_quiz -> Route.QUIZ
+        else -> null
+    }
+
+    private fun idOf(route: Route): Int = when (route) {
+        Route.HOME -> R.id.nav_home
+        Route.ACCOUNTS -> R.id.nav_accounts
+        Route.SIGN -> R.id.nav_sign
+        Route.STUDY -> R.id.nav_study
+        Route.QUIZ -> R.id.nav_quiz
+        // 日志是二级页：底栏没有对应项，随便给个已知 id 不让它崩
+        Route.LOG -> R.id.nav_home
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        outState.putString(KEY_ROUTE, currentRoute.name)
+        super.onSaveInstanceState(outState)
+    }
+
+    /** 底栏最多 5 项（BottomNavigationView 的硬限制），其余页面走二级入口 */
+    private enum class Route(val tag: String, val titleRes: Int) {
+        HOME("tab_home", R.string.tab_home),
+        ACCOUNTS("tab_accounts", R.string.tab_accounts),
+        SIGN("tab_sign", R.string.tab_sign),
+        STUDY("tab_study", R.string.tab_study),
+        QUIZ("tab_quiz", R.string.tab_quiz),
+        LOG("tab_log", R.string.tab_log)
+    }
+
+    private fun showTab(route: Route) {
+        currentRoute = route
+        binding.toolbar.title = getString(route.titleRes)
 
         val fm = supportFragmentManager
-        val target: Fragment = fm.findFragmentByTag(tag) ?: when (itemId) {
-            R.id.nav_home -> HomeFragment()
-            R.id.nav_accounts -> AccountsFragment()
-            R.id.nav_sign -> SignFragment()
-            R.id.nav_study -> StudyFragment()
-            R.id.nav_quiz -> QuizFragment()
-            else -> LogFragment()
+        val target: Fragment = fm.findFragmentByTag(route.tag) ?: when (route) {
+            Route.HOME -> HomeFragment()
+            Route.ACCOUNTS -> AccountsFragment()
+            Route.SIGN -> SignFragment()
+            Route.STUDY -> StudyFragment()
+            Route.QUIZ -> QuizFragment()
+            Route.LOG -> LogFragment()
         }
 
         val ft = fm.beginTransaction()
-        for (t in ALL_TAGS) {
-            val f = fm.findFragmentByTag(t) ?: continue
+        for (r in Route.entries) {
+            val f = fm.findFragmentByTag(r.tag) ?: continue
             if (f !== target) ft.hide(f)
         }
-        if (target.isAdded) ft.show(target) else ft.add(R.id.container, target, tag)
+        if (target.isAdded) ft.show(target) else ft.add(R.id.container, target, route.tag)
         ft.commitNow()
     }
 
     companion object {
-        private const val TAG_HOME = "tab_home"
-        private const val TAG_ACCOUNTS = "tab_accounts"
-        private const val TAG_SIGN = "tab_sign"
-        private const val TAG_STUDY = "tab_study"
-        private const val TAG_QUIZ = "tab_quiz"
-        private const val TAG_LOG = "tab_log"
-        private val ALL_TAGS = listOf(TAG_HOME, TAG_ACCOUNTS, TAG_SIGN, TAG_STUDY, TAG_QUIZ, TAG_LOG)
+        private const val KEY_ROUTE = "current_route"
     }
 }

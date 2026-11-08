@@ -5,5 +5,4 @@
     <item android:id="@+id/nav_sign" android:icon="@drawable/ic_tab_sign" android:title="@string/tab_sign" />
     <item android:id="@+id/nav_study" android:icon="@drawable/ic_tab_study" android:title="@string/tab_study" />
     <item android:id="@+id/nav_quiz" android:icon="@drawable/ic_tab_study" android:title="@string/tab_quiz" />
-    <item android:id="@+id/nav_log" android:icon="@drawable/ic_tab_log" android:title="@string/tab_log" android:visible="false" />
 </menu>
