@@ -19,6 +19,7 @@ import com.xxt.sign.core.Account
 import com.xxt.sign.core.AccountStore
 import com.xxt.sign.core.LogStore
 import com.xxt.sign.core.Settings
+import com.xxt.sign.R
 import com.xxt.sign.databinding.FragmentStudyBinding
 import com.xxt.sign.sign.SignEngine
 import com.xxt.sign.study.ChapterCheck
@@ -250,32 +251,16 @@ class StudyFragment : Fragment() {
 
     // -------------------------------------------------------- 章节测验
 
-    /** 把已勾选的章节带给测验页；扫描/答题都在那边做，这里只负责入口 */
+    /** 测验已经是底部 tab 了，这里只负责把用户送过去 */
     private fun openQuiz() {
-        val account = selectedAccount() ?: return toast("请先在「账号」页勾选刷课账号")
-        val refs = mutableListOf<QuizActivity.ChapterRef>()
-        items.forEach { item ->
-            val chapters = item.chapters ?: return@forEach
-            chapters.filter { it.id in item.selectedChapters }.forEach { ch ->
-                refs.add(
-                    QuizActivity.ChapterRef(
-                        courseId = item.course.courseId,
-                        clazzId = item.course.clazzId,
-                        cpi = item.course.cpi,
-                        courseTitle = item.course.title,
-                        chapterId = ch.id,
-                        chapterTitle = ch.title
-                    )
-                )
-            }
+        val act = activity as? com.xxt.sign.MainActivity
+        if (act == null) {
+            toast("打开底部「测验」页即可")
+            return
         }
-        if (refs.isEmpty()) {
-            return toast("先在课程里勾选章节，再来扫描章节测验")
-        }
-        startActivity(
-            QuizActivity.intent(requireContext(), account.id, QuizActivity.chaptersToJson(refs))
-        )
+        act.openTab(R.id.nav_quiz)
     }
+
     // ------------------------------------------------------------ 课程
 
     private fun fetchCourses() {

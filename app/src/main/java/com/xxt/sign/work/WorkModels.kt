@@ -105,7 +105,12 @@ data class QuizResult(
     /** 课程名，通知里用 */
     val courseTitle: String = "",
     /** 回查到的分数（没查就是空） */
-    val score: String = ""
+    val score: String = "",
+    /** 本卷用的参考字体，以及整卷相似度统计（UI/日志展示） */
+    val fontReference: String = "",
+    val fontMean: Float = 0f,
+    val fontMin: Float = 0f,
+    val fontWeak: Int = 0
 ) {
     val ok: Boolean get() = submitted && answered > 0
 

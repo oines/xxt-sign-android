@@ -35,7 +35,9 @@ class QuizEngine(
     /** base64 TTF → 解码器；Android 端注入，测试里可以传 null */
     private val decoderFactory: (String) -> FontDecoder? = { null },
     private val sleeper: suspend (Long) -> Unit = { delay(it) },
-    private val log: (String, Boolean) -> Unit = { m, ok -> LogStore.add(m, ok) }
+    private val log: (String, Boolean) -> Unit = { m, ok -> LogStore.add(m, ok) },
+    /** 每道题的进度回调：第 index 题 / 共 total 题 */
+    private val onStep: (Int, Int) -> Unit = { _, _ -> }
 ) {
 
     /** 页面里出现这些字样又没解析出题目 → 大概率是硬阻塞 */
@@ -73,11 +75,35 @@ class QuizEngine(
             log("[测验] ${job.chapterTitle} 字体解不开，按明文处理（大概率答错，建议人工）", false)
         }
 
+        // 整卷预处理：多参考字体里选一套胜出的，并按本卷相似度分布算自适应阈值
+        val fontStats = decoder?.prepare(
+            page.questions.flatMap { q -> listOf(q.stem) + q.options.map { it.text } }
+        )
+        if (fontStats != null) {
+            log(
+                "[测验] 字体识别：${fontStats.reference}｜平均 ${"%.2f".format(fontStats.mean)}" +
+                    "｜中位 ${"%.2f".format(fontStats.median)}｜最低 ${"%.2f".format(fontStats.min)}" +
+                    "｜存疑 ${fontStats.weak}/${fontStats.total} 字｜阈值 ${"%.2f".format(fontStats.threshold)}",
+                true
+            )
+            if (fontStats.unreadable) {
+                log(
+                    "[测验] ${job.chapterTitle} 这卷字体无法识别（中位 ${"%.2f".format(fontStats.median)}），不硬答",
+                    false
+                )
+                return result(
+                    job, false, 0, page.questionCount,
+                    "这卷字体无法识别，未作答", needsHuman = true
+                )
+            }
+        }
+
         val outcomes = mutableListOf<QuestionOutcome>()
         val submitAnswers = LinkedHashMap<String, String>()
         val provider = answers
 
         page.questions.forEachIndexed { index, q ->
+            runCatching { onStep(index + 1, page.questions.size) }
             val stem = decode(decoder, q.stem)
             val opts = q.options.map { it.copy(text = decode(decoder, it.text).text) }
             val decodedQ = q.copy(stem = stem.text, options = opts)
@@ -92,11 +118,10 @@ class QuizEngine(
 
             when {
                 weak.isNotEmpty() -> {
-                    log(
-                        "[测验] 第${no}题 ${WorkQuestion.typeName(q.type)} 字体反解存疑" +
-                            "（${weak.distinct().joinToString("")}，最低 ${"%.2f".format(stem.minScore)}），留空待复核",
-                        false
-                    )
+                    val why = stem.reason.ifBlank {
+                        "有 ${weak.distinct().size} 个字认不出来，怕答错，先留着"
+                    }
+                    log("[测验] 第${no}题 ${WorkQuestion.typeName(q.type)}：$why", false)
                     outcomes.add(
                         QuestionOutcome(q.qid, q.type, WorkParser.shortStem(stem.text), "", "待复核", false)
                     )
@@ -127,7 +152,7 @@ class QuizEngine(
         if (submitAnswers.isEmpty()) {
             log("[测验] ${job.chapterTitle} · ${page.title} 一题都没答上，不交白卷", false)
             return result(
-                job, false, 0, total, "没有把握的题，未提交", outcomes,
+                job, false, 0, total, "字认不准或题库没答案，这卷没交", outcomes,
                 hitRate = 0f
             )
         }
@@ -174,7 +199,11 @@ class QuizEngine(
 
         return result(
             job, submit.ok, submitAnswers.size, total, msg, outcomes,
-            hitRate = hitRate, score = score
+            hitRate = hitRate, score = score,
+            fontReference = fontStats?.reference.orEmpty(),
+            fontMean = fontStats?.mean ?: 0f,
+            fontMin = fontStats?.min ?: 0f,
+            fontWeak = fontStats?.weak ?: 0
         )
     }
 
@@ -190,7 +219,11 @@ class QuizEngine(
         outcomes: List<QuestionOutcome> = emptyList(),
         hitRate: Float = 0f,
         needsHuman: Boolean = false,
-        score: String = ""
+        score: String = "",
+        fontReference: String = "",
+        fontMean: Float = 0f,
+        fontMin: Float = 0f,
+        fontWeak: Int = 0
     ) = QuizResult(
         title = "${job.chapterTitle} · ${job.name.ifBlank { job.workId }}",
         submitted = submitted,
@@ -202,7 +235,11 @@ class QuizEngine(
         hitRate = hitRate,
         needsHuman = needsHuman,
         courseTitle = job.courseTitle.ifBlank { job.courseId },
-        score = score
+        score = score,
+        fontReference = fontReference,
+        fontMean = fontMean,
+        fontMin = fontMin,
+        fontWeak = fontWeak
     )
 
     private fun randomBetween(min: Int, max: Int): Long {

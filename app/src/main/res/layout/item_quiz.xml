@@ -5,7 +5,7 @@
     android:gravity="center_vertical"
     android:orientation="horizontal"
     android:paddingHorizontal="4dp"
-    android:paddingVertical="2dp">
+    android:paddingVertical="4dp">
 
     <com.google.android.material.checkbox.MaterialCheckBox
         android:id="@+id/cbQuiz"
@@ -42,8 +42,28 @@
             android:id="@+id/tvQuizState"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="未开始"
+            android:text="题量未知 · 未开始"
             android:textColor="@color/primary"
             android:textSize="12sp" />
+
+        <TextView
+            android:id="@+id/tvQuizError"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="1dp"
+            android:textColor="@color/muted"
+            android:textSize="12sp"
+            android:visibility="gone" />
     </LinearLayout>
+
+    <com.google.android.material.button.MaterialButton
+        android:id="@+id/btnRetry"
+        style="@style/Widget.Material3.Button.TextButton"
+        android:layout_width="wrap_content"
+        android:layout_height="40dp"
+        android:insetTop="0dp"
+        android:insetBottom="0dp"
+        android:minWidth="0dp"
+        android:text="重试"
+        android:visibility="gone" />
 </LinearLayout>

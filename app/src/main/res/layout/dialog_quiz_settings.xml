@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
     android:layout_width="match_parent"
     android:layout_height="wrap_content">
 
@@ -8,305 +9,273 @@
         android:layout_height="wrap_content"
         android:orientation="vertical"
         android:paddingHorizontal="20dp"
-        android:paddingTop="8dp"
-        android:paddingBottom="4dp">
+        android:paddingTop="4dp"
+        android:paddingBottom="8dp">
 
-        <com.google.android.material.textfield.TextInputLayout
+        <!-- ================= 答案来源 ================= -->
+        <TextView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:hint="题库类型（none / tikuadapter / yanxi / lemon）">
+            android:text="答案来源"
+            android:textSize="13sp"
+            android:textStyle="bold" />
 
-            <com.google.android.material.textfield.TextInputEditText
+        <com.google.android.material.textfield.TextInputLayout
+            style="@style/Widget.Material3.TextInputLayout.OutlinedBox.ExposedDropdownMenu"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:hint="先查题库还是直接问大模型">
+
+            <com.google.android.material.textfield.MaterialAutoCompleteTextView
                 android:id="@+id/etProvider"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:inputType="text" />
+                android:inputType="none"
+                android:minHeight="56dp" />
         </com.google.android.material.textfield.TextInputLayout>
 
         <TextView
-            android:id="@+id/linkTikuAdapter"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="2dp"
-            android:clickable="true"
-            android:focusable="true"
-            android:paddingVertical="2dp"
-            android:text="tikuAdapter（自建）：github.com/DokiDoki1103/tikuAdapter"
-            android:textColor="#1A73E8"
-            android:textSize="12sp" />
-
-        <TextView
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="2dp"
-            android:text="auto/yanxi/lemon/tikuadapter：题库优先，未命中再 LLM；llm：纯大模型；留空或 off：都不查"
+            android:text="题库优先的选项，没查到才会去问大模型；选「不查题库」就只暂存。"
             android:textColor="@color/muted"
             android:textSize="12sp" />
 
-
-
-        <com.google.android.material.textfield.TextInputLayout
+        <!-- 题库相关输入项：选到题库模式才显示 -->
+        <LinearLayout
+            android:id="@+id/bankFields"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="8dp"
-            android:hint="题库端点（tikuAdapter 填根地址 / 言溪填 tk.enncy.cn）">
+            android:orientation="vertical">
 
-            <com.google.android.material.textfield.TextInputEditText
-                android:id="@+id/etEndpoint"
+            <com.google.android.material.textfield.TextInputLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:inputType="textUri" />
-        </com.google.android.material.textfield.TextInputLayout>
+                android:layout_marginTop="8dp"
+                android:hint="题库地址（一般不用改）">
 
-        <TextView
-            android:id="@+id/linkYanxi"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="2dp"
-            android:clickable="true"
-            android:focusable="true"
-            android:paddingVertical="2dp"
-            android:text="言溪题库（申请 token）：tk.enncy.cn"
-            android:textColor="#1A73E8"
-            android:textSize="12sp" />
+                <com.google.android.material.textfield.TextInputEditText
+                    android:id="@+id/etEndpoint"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:inputType="textUri"
+                    android:minHeight="56dp" />
+            </com.google.android.material.textfield.TextInputLayout>
 
-        <TextView
-            android:id="@+id/linkLemon"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="2dp"
-            android:clickable="true"
-            android:focusable="true"
-            android:paddingVertical="2dp"
-            android:text="柠檬题库（申请 token）：lemtk.xyz"
-            android:textColor="#1A73E8"
-            android:textSize="12sp" />
-
-
-
-        <com.google.android.material.textfield.TextInputLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="8dp"
-            android:hint="题库 token（没有可留空）">
-
-            <com.google.android.material.textfield.TextInputEditText
-                android:id="@+id/etToken"
+            <com.google.android.material.textfield.TextInputLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:inputType="text" />
-        </com.google.android.material.textfield.TextInputLayout>
-
-        <TextView
-            android:id="@+id/linkYanxiToken"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="2dp"
-            android:clickable="true"
-            android:focusable="true"
-            android:paddingVertical="2dp"
-            android:text="拿言溪 token → tk.enncy.cn"
-            android:textColor="#1A73E8"
-            android:textSize="12sp" />
-
-        <TextView
-            android:id="@+id/linkLemonToken"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="2dp"
-            android:clickable="true"
-            android:focusable="true"
-            android:paddingVertical="2dp"
-            android:text="拿柠檬 token → lemtk.xyz"
-            android:textColor="#1A73E8"
-            android:textSize="12sp" />
-
-        <TextView
-            android:id="@+id/linkTikuToken"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="0dp"
-            android:clickable="true"
-            android:focusable="true"
-            android:paddingVertical="2dp"
-            android:text="tikuAdapter 部署与 token → GitHub"
-            android:textColor="#1A73E8"
-            android:textSize="12sp" />
-
-
-
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="8dp"
-            android:orientation="horizontal">
-
-            <com.google.android.material.textfield.TextInputLayout
-                android:layout_width="0dp"
-                android:layout_height="wrap_content"
-                android:layout_weight="1"
-                android:hint="单题停留下限(秒)">
+                android:layout_marginTop="8dp"
+                android:hint="题库 token（如有）">
 
                 <com.google.android.material.textfield.TextInputEditText
-                    android:id="@+id/etQMin"
+                    android:id="@+id/etToken"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:inputType="number" />
-            </com.google.android.material.textfield.TextInputLayout>
-
-            <com.google.android.material.textfield.TextInputLayout
-                android:layout_width="0dp"
-                android:layout_height="wrap_content"
-                android:layout_marginStart="8dp"
-                android:layout_weight="1"
-                android:hint="上限(秒)">
-
-                <com.google.android.material.textfield.TextInputEditText
-                    android:id="@+id/etQMax"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:inputType="number" />
+                    android:inputType="text"
+                    android:minHeight="56dp" />
             </com.google.android.material.textfield.TextInputLayout>
         </LinearLayout>
 
-        <LinearLayout
+        <TextView
+            android:id="@+id/tvLinks"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="8dp"
-            android:orientation="horizontal">
+            android:layout_marginTop="4dp"
+            android:paddingVertical="4dp"
+            android:textColor="#1A73E8"
+            android:textSize="12sp" />
 
-            <com.google.android.material.textfield.TextInputLayout
-                android:layout_width="0dp"
-                android:layout_height="wrap_content"
-                android:layout_weight="1"
-                android:hint="提交前等待下限(秒)">
-
-                <com.google.android.material.textfield.TextInputEditText
-                    android:id="@+id/etSMin"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:inputType="number" />
-            </com.google.android.material.textfield.TextInputLayout>
-
-            <com.google.android.material.textfield.TextInputLayout
-                android:layout_width="0dp"
-                android:layout_height="wrap_content"
-                android:layout_marginStart="8dp"
-                android:layout_weight="1"
-                android:hint="上限(秒)">
-
-                <com.google.android.material.textfield.TextInputEditText
-                    android:id="@+id/etSMax"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:inputType="number" />
-            </com.google.android.material.textfield.TextInputLayout>
-        </LinearLayout>
-
-        <LinearLayout
+        <!-- ================= 大模型 ================= -->
+        <TextView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="8dp"
-            android:orientation="horizontal">
-
-            <com.google.android.material.textfield.TextInputLayout
-                android:layout_width="0dp"
-                android:layout_height="wrap_content"
-                android:layout_weight="1"
-                android:hint="两卷间隔(秒)">
-
-                <com.google.android.material.textfield.TextInputEditText
-                    android:id="@+id/etGap"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:inputType="number" />
-            </com.google.android.material.textfield.TextInputLayout>
-
-            <com.google.android.material.textfield.TextInputLayout
-                android:layout_width="0dp"
-                android:layout_height="wrap_content"
-                android:layout_marginStart="8dp"
-                android:layout_weight="1"
-                android:hint="字体相似度阈值">
-
-                <com.google.android.material.textfield.TextInputEditText
-                    android:id="@+id/etThreshold"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:inputType="numberDecimal" />
-            </com.google.android.material.textfield.TextInputLayout>
-        </LinearLayout>
+            android:layout_marginTop="14dp"
+            android:text="大模型"
+            android:textSize="13sp"
+            android:textStyle="bold" />
 
         <com.google.android.material.materialswitch.MaterialSwitch
             android:id="@+id/swLlm"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="14dp"
-            android:text="大模型兜底（DeepSeek，默认关）" />
-
-        <TextView
-            android:id="@+id/linkDeepSeek"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
             android:layout_marginTop="2dp"
-            android:clickable="true"
-            android:focusable="true"
-            android:paddingVertical="2dp"
-            android:text="申请 DeepSeek API Key：platform.deepseek.com"
-            android:textColor="#1A73E8"
-            android:textSize="12sp" />
+            android:text="题库查不到时，问大模型" />
 
         <com.google.android.material.textfield.TextInputLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="6dp"
-            android:hint="API Key（sk-…，留空则不用大模型）">
+            android:hint="API Key">
 
             <com.google.android.material.textfield.TextInputEditText
                 android:id="@+id/etLlmKey"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:inputType="textPassword" />
+                android:inputType="textPassword"
+                android:minHeight="56dp" />
         </com.google.android.material.textfield.TextInputLayout>
 
         <com.google.android.material.textfield.TextInputLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="6dp"
-            android:hint="Base URL（默认 https://api.deepseek.com）">
+            android:layout_marginTop="8dp"
+            android:hint="服务地址">
 
             <com.google.android.material.textfield.TextInputEditText
                 android:id="@+id/etLlmBaseUrl"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:inputType="textUri" />
+                android:inputType="textUri"
+                android:minHeight="56dp" />
         </com.google.android.material.textfield.TextInputLayout>
 
         <com.google.android.material.textfield.TextInputLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="6dp"
-            android:hint="模型（默认 deepseek-chat）">
+            android:layout_marginTop="8dp"
+            android:hint="模型名">
 
             <com.google.android.material.textfield.TextInputEditText
                 android:id="@+id/etLlmModel"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:inputType="text" />
+                android:inputType="text"
+                android:minHeight="56dp" />
         </com.google.android.material.textfield.TextInputLayout>
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="2dp"
+            android:text="默认 DeepSeek（deepseek-chat），也可以填其它 OpenAI 兼容服务"
+            android:textColor="@color/muted"
+            android:textSize="12sp" />
+
+        <!-- ================= 节奏与安全 ================= -->
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="14dp"
+            android:text="节奏与安全"
+            android:textSize="13sp"
+            android:textStyle="bold" />
+
+        <com.google.android.material.textfield.TextInputLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:hint="每题停留秒数（下限）">
+
+            <com.google.android.material.textfield.TextInputEditText
+                android:id="@+id/etQMin"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:inputType="number"
+                android:minHeight="56dp" />
+        </com.google.android.material.textfield.TextInputLayout>
+
+        <com.google.android.material.textfield.TextInputLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:hint="每题停留秒数（上限）">
+
+            <com.google.android.material.textfield.TextInputEditText
+                android:id="@+id/etQMax"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:inputType="number"
+                android:minHeight="56dp" />
+        </com.google.android.material.textfield.TextInputLayout>
+
+        <com.google.android.material.textfield.TextInputLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:hint="提交前等待秒数（下限）">
+
+            <com.google.android.material.textfield.TextInputEditText
+                android:id="@+id/etSMin"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:inputType="number"
+                android:minHeight="56dp" />
+        </com.google.android.material.textfield.TextInputLayout>
+
+        <com.google.android.material.textfield.TextInputLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:hint="提交前等待秒数（上限）">
+
+            <com.google.android.material.textfield.TextInputEditText
+                android:id="@+id/etSMax"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:inputType="number"
+                android:minHeight="56dp" />
+        </com.google.android.material.textfield.TextInputLayout>
+
+        <com.google.android.material.textfield.TextInputLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:hint="两卷之间至少间隔（秒）">
+
+            <com.google.android.material.textfield.TextInputEditText
+                android:id="@+id/etGap"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:inputType="number"
+                android:minHeight="56dp" />
+        </com.google.android.material.textfield.TextInputLayout>
+
+        <com.google.android.material.textfield.TextInputLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:hint="字体识别兜底阈值">
+
+            <com.google.android.material.textfield.TextInputEditText
+                android:id="@+id/etThreshold"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:inputType="numberDecimal"
+                android:minHeight="56dp" />
+        </com.google.android.material.textfield.TextInputLayout>
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="2dp"
+            android:text="阈值只是兜底：平时会按每卷的相似度自动放宽，只有明显对不上的字才留空"
+            android:textColor="@color/muted"
+            android:textSize="12sp" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="14dp"
+            android:text="⚠ 危险项"
+            android:textColor="#D93025"
+            android:textSize="12sp"
+            android:textStyle="bold" />
 
         <com.google.android.material.materialswitch.MaterialSwitch
             android:id="@+id/swStoreOnly"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="12dp"
-            android:text="只暂存不交卷（安全默认）" />
+            android:layout_marginTop="2dp"
+            android:text="只暂存不交卷（关掉 = 真的提交）" />
 
         <TextView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="6dp"
-            android:text="关掉上面这个开关才会真的提交（pyFlag 不传）。字体反解低于阈值的题会留空待复核，不会猜。"
+            android:layout_marginTop="4dp"
+            android:text="默认是自动交卷。第一次用建议先打开「只暂存」，确认题库和字体都正常后再关掉。"
             android:textColor="@color/muted"
             android:textSize="12sp" />
     </LinearLayout>

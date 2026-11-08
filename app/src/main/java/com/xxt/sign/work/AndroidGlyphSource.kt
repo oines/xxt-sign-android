@@ -10,11 +10,7 @@ import android.graphics.Typeface
 import java.io.File
 
 /**
- * Android 上的字形渲染：把字画到 64×64 的 ALPHA_8 位图上，降采样成 [size]×[size] 灰度特征。
- *
- * 密文字体是页面里内嵌的 TTF（base64），落到 cache 目录再交给 Typeface；
- * 参考字体用系统自带的（Android 中文默认就是思源黑体 Noto Sans CJK）。
- *
+ * Android 上的字形渲染：把字画到 64×64 的 ALPHA_8 位图，降采样成 [size]×[size] 灰度特征。
  * 这层是唯一依赖 Android 的部分，[FontDecoder] 本身是纯 JVM 的。
  */
 class AndroidGlyphSource(
@@ -30,15 +26,48 @@ class AndroidGlyphSource(
         Typeface.createFromFile(f)
     }.getOrNull()
 
-    private val reference: Typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.NORMAL)
-
     override fun renderSecret(ch: Char, size: Int): FloatArray? =
-        secret?.let { render(it, ch, size) }
+        secret?.let { GlyphRaster.render(it, ch, size) }
+}
 
-    override fun renderReference(ch: Char, size: Int): FloatArray? =
-        render(reference, ch, size)
+/**
+ * 参考字体集合。
+ *
+ * 至少两套系统字体（黑体/宋体，Android 上分别是 Noto Sans CJK 与 Noto Serif CJK）；
+ * 如果把 ttf/otf 放进 `assets/fonts/`，也会自动加进来作为更多参考。
+ */
+object AndroidReferenceFonts {
 
-    private fun render(tf: Typeface, ch: Char, size: Int): FloatArray? {
+    @Volatile
+    private var cached: List<ReferenceFont>? = null
+
+    fun list(context: Context): List<ReferenceFont> {
+        cached?.let { return it }
+        val fonts = mutableListOf(
+            ReferenceFont("系统黑体") { c, s -> GlyphRaster.render(Typeface.SANS_SERIF, c, s) },
+            ReferenceFont("系统宋体") { c, s -> GlyphRaster.render(Typeface.SERIF, c, s) }
+        )
+        runCatching {
+            context.assets.list("fonts").orEmpty()
+                .filter { it.endsWith(".ttf", true) || it.endsWith(".otf", true) }
+                .forEach { name ->
+                    val tf = Typeface.createFromAsset(context.assets, "fonts/$name")
+                    fonts.add(
+                        ReferenceFont(name.substringBeforeLast('.')) { c, s ->
+                            GlyphRaster.render(tf, c, s)
+                        }
+                    )
+                }
+        }
+        cached = fonts
+        return fonts
+    }
+}
+
+/** 单字形光栅化 + 16×16 特征提取 */
+object GlyphRaster {
+
+    fun render(tf: Typeface, ch: Char, size: Int): FloatArray? {
         val px = 64
         val bmp = runCatching { Bitmap.createBitmap(px, px, Bitmap.Config.ALPHA_8) }.getOrNull()
             ?: return null
@@ -76,7 +105,6 @@ class AndroidGlyphSource(
                     sum += v * v
                 }
             }
-            // L2 归一化，后面直接点积就是余弦
             val norm = kotlin.math.sqrt(sum)
             if (norm <= 1e-6f) return null
             for (i in out.indices) out[i] /= norm

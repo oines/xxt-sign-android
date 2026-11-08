@@ -99,7 +99,7 @@ class StudyCourseAdapter(
             b.tvSub.text = listOfNotNull(
                 item.course.teacher.takeIf { it.isNotBlank() },
                 chapterText,
-                "cpi=${item.course.cpi}".takeIf { item.course.cpi.isNotBlank() }
+                item.course.teacher.takeIf { it.isNotBlank() }?.let { "教师 $it" }
             ).joinToString(" · ")
 
             b.btnExpand.text = if (item.expanded) "收起" else "章节"

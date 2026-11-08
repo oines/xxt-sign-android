@@ -18,6 +18,7 @@ import com.xxt.sign.sign.SignEngine
 import com.xxt.sign.sign.SignPlanner
 import com.xxt.sign.study.StudyApi
 import com.xxt.sign.work.AndroidGlyphSource
+import com.xxt.sign.work.AndroidReferenceFonts
 import com.xxt.sign.work.AnswerProvider
 import com.xxt.sign.work.FontBytes
 import com.xxt.sign.work.FontDecoder
@@ -280,8 +281,9 @@ class MonitorService : Service() {
                 FontBytes.decode(b64)?.let { bytes ->
                     FontDecoder(
                         source = AndroidGlyphSource(this, bytes),
+                        references = AndroidReferenceFonts.list(this),
                         size = 16,
-                        threshold = Settings.quizFontThreshold
+                        fixedThreshold = Settings.quizFontThreshold
                     )
                 }
             },

@@ -1,12 +1,18 @@
 <?xml version="1.0" encoding="utf-8"?>
-<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
     android:layout_width="match_parent"
     android:layout_height="wrap_content"
-    android:orientation="vertical"
-    android:padding="20dp">
+    android:fillViewport="true">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:padding="20dp">
 
     <com.google.android.material.textfield.TextInputLayout
+        android:id="@+id/tilPhone"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:hint="@string/phone">
@@ -15,7 +21,8 @@
             android:id="@+id/etPhone"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:inputType="text"
+            android:inputType="phone"
+            android:maxLength="11"
             android:maxLines="1" />
     </com.google.android.material.textfield.TextInputLayout>
 
@@ -33,7 +40,7 @@
             android:layout_width="0dp"
             android:layout_height="wrap_content"
             android:layout_weight="1"
-            android:text="密码登录" />
+            android:text="密码" />
 
         <com.google.android.material.button.MaterialButton
             android:id="@+id/btnModeSms"
@@ -41,7 +48,7 @@
             android:layout_width="0dp"
             android:layout_height="wrap_content"
             android:layout_weight="1"
-            android:text="短信验证码" />
+            android:text="验证码" />
 
         <com.google.android.material.button.MaterialButton
             android:id="@+id/btnModeWeb"
@@ -49,7 +56,7 @@
             android:layout_width="0dp"
             android:layout_height="wrap_content"
             android:layout_weight="1"
-            android:text="网页登录" />
+            android:text="网页" />
     </com.google.android.material.button.MaterialButtonToggleGroup>
 
     <com.google.android.material.textfield.TextInputLayout
@@ -111,4 +118,5 @@
         android:textSize="12sp"
         android:textColor="@color/muted"
         android:text="验证码登录更省事，也不会把密码留在本机。若提示需要图形验证，请稍后重试。" />
-</LinearLayout>
+    </LinearLayout>
+</ScrollView>
