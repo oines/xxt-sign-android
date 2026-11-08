@@ -311,10 +311,7 @@ class SignFragment : Fragment() {
     private fun handlePicked(d: SignPlanner.Detected) {
         lastTarget = d
         when (d.requirement) {
-            SignPlanner.Requirement.QR_CODE -> {
-                pendingScanTarget = d
-                requestScan()
-            }
+            SignPlanner.Requirement.QR_CODE -> tryRefreshQrThenScan(d)
 
             SignPlanner.Requirement.SIGN_CODE -> promptSignCode(d)
             SignPlanner.Requirement.LOCATION -> promptLocation(d)
@@ -443,8 +440,38 @@ class SignFragment : Fragment() {
         }
     }
 
+    /**
+     * 动态二维码的 enc 只存在于二维码图片里，但服务端还有 refreshQRCode 接口。
+     * 先 best-effort 问一次：拿到 enc 就直接签（不用扫码），拿不到再叫用户扫。
+     */
+    private fun tryRefreshQrThenScan(d: SignPlanner.Detected) {
+        val accounts = AccountStore.accounts.value
+        if (accounts.isEmpty()) return showStatus("还没有添加账号")
+        if (running) return toast("上一个任务还在跑")
+        running = true
+        b.progress.visibility = View.VISIBLE
+        showStatus("正在向服务端要二维码…")
+        viewLifecycleOwner.lifecycleScope.launch {
+            val enc = runCatching { SignPlanner.tryRefreshEnc(accounts, d.aid) }.getOrNull()
+            running = false
+            b.progress.visibility = View.GONE
+            if (enc != null) {
+                showStatus("已拿到二维码 enc，开始签：${d.title}")
+                executePlan(d, null, null, enc)
+            } else {
+                pendingScanTarget = d
+                requestScan()
+            }
+        }
+    }
+
     /** 执行：所有有该活动的账号逐个签 */
-    private fun executePlan(d: SignPlanner.Detected, qr: QrPayload?, signCode: String?) {
+    private fun executePlan(
+        d: SignPlanner.Detected,
+        qr: QrPayload?,
+        signCode: String?,
+        qrEnc: String? = null
+    ) {
         val accounts = AccountStore.accounts.value
         if (running) return toast("上一个任务还在跑")
         running = true
@@ -462,6 +489,7 @@ class SignFragment : Fragment() {
                     qr = qr,
                     signCode = signCode,
                     photoBytes = photoBytes(),
+                    qrEnc = qrEnc,
                     onProgress = { showStatus(it) },
                     onResult = { o ->
                         results.add(StatusItem(o.title, o.detail, o.ok))

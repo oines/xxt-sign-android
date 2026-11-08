@@ -135,6 +135,7 @@ object SignPlanner {
      * 让所有有该活动的账号逐个签掉它。
      *
      * @param qr 二维码活动的扫码结果（其它类型传 null）
+     * @param qrEnc 没扫码但通过 refreshQRCode 拿到了 enc 时使用
      * @param photoBytes 拍照签到用图
      */
     suspend fun execute(
@@ -143,6 +144,7 @@ object SignPlanner {
         qr: QrPayload? = null,
         signCode: String? = null,
         photoBytes: ByteArray? = null,
+        qrEnc: String? = null,
         onProgress: (String) -> Unit = {},
         onResult: (SignEngine.Outcome) -> Unit = {},
         askHuman: suspend (SignFlow.CaptchaPrompt) -> String? = { null }
@@ -175,14 +177,17 @@ object SignPlanner {
                 }
 
             val opt = SignOptions(
-                // 二维码：enc 与 rcode 都用扫到的那一份，所有账号共用
-                enc = qr?.enc,
+                // 二维码：enc 先看扫到的那份，再退回 refreshQRCode 拿到的那份；rcode 只能是扫码原文
+                enc = qr?.enc?.takeIf { it.isNotBlank() } ?: qrEnc,
                 rcode = qr?.raw,
                 // 手势 / 签到码：优先用用户输入的，否则用服务端给的
                 signCode = signCode?.takeIf { it.isNotBlank() }
                     ?: target.serverSignCode.takeIf { it.isNotBlank() },
                 aid = target.aid,
-                photoBytes = photoBytes
+                photoBytes = photoBytes,
+                // 扫码入口是 15，课堂入口是 0
+                appType = if (qr != null) CxApi.APP_TYPE_SCAN else CxApi.APP_TYPE_COURSE,
+                encAt = if (qr != null) System.currentTimeMillis() else 0L
             )
 
             val o = runCatching {
@@ -199,4 +204,19 @@ object SignPlanner {
     private fun fail(acc: Account, target: Detected, msg: String) = SignEngine.Outcome(
         acc.id, acc.display, "${target.title} ｜ $msg", false, SignEngine.SignStatus.FAILED
     )
+
+    /**
+     * best-effort：试一次 refreshQRCode 拿动态二维码的 enc。
+     * 拿不到（未开始 / 已结束 / 无权限）就返回 null，由 UI 退回「请扫二维码」。
+     * 这里不抛异常、不报错，失败不影响原流程。
+     */
+    suspend fun tryRefreshEnc(accounts: List<Account>, aid: String): String? {
+        accounts.forEach { acc ->
+            val (s, _) = SignEngine.sessionFor(acc)
+            if (s == null) return@forEach
+            val enc = runCatching { CxApi(s).refreshQRCode(aid) }.getOrNull()
+            if (!enc.isNullOrBlank()) return enc
+        }
+        return null
+    }
 }

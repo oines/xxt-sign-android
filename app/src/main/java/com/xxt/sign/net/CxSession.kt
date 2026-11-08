@@ -27,6 +27,13 @@ class CxSession(val account: Account) {
     val client: OkHttpClient = Http.withJar(jar, userAgent)
 
     /**
+     * 对应 H5 页原生桥 `CLIENT_DEVICE_FLAG` 的 flagInfo，提交签到时作为 `deviceCode` 发出去。
+     * 页面会先 `trim()` 再抹掉 `?` `&`；这里用同一账号固定的设备标识，保证前后说法一致。
+     */
+    val deviceCode: String
+        get() = account.schild.trim().replace("?", "").replace("&", "")
+
+    /**
      * 刷课用的桌面 UA 客户端：与 [client] 共享同一个 CookieJar，
      * 但请求 mooc1 / mooc2-ans 的网页接口时用 PC 浏览器身份。
      */

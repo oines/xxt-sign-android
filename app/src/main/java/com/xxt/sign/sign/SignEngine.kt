@@ -13,10 +13,11 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.sync.withPermit
 import org.json.JSONObject
-import java.util.Collections
 
 /**
  * 签到相关的底层能力：会话、活动发现、单活动提交。
@@ -82,7 +83,10 @@ object SignEngine {
         val courses = resolveCourses(api, filter)
         if (courses.isEmpty()) return emptyList()
 
-        val out = Collections.synchronizedList(mutableListOf<ActiveActivity>())
+        // 并发拉取，但写入要加锁：`any { } + add` 这种先查后写
+        // 两个协程同时进来时会把同一个活动收两遍，最后同一个活动签两次。
+        val lock = Mutex()
+        val found = LinkedHashMap<String, ActiveActivity>()
         val sem = Semaphore(4)
         coroutineScope {
             courses.map { course ->
@@ -91,20 +95,26 @@ object SignEngine {
                     com.xxt.sign.core.Jitter.staggerStart()
                     sem.withPermit {
                         runCatching {
-                            api.activeList(course.courseId, course.classId).forEach { act ->
+                            val list = api.activeList(course.courseId, course.classId)
+                            for (act in list) {
                                 val aid = act.optString("id")
-                                if (aid.isBlank()) return@forEach
-                                if (out.any { it.aid == aid }) return@forEach
+                                if (aid.isBlank()) continue
+                                val seen = lock.withLock { found.containsKey(aid) }
+                                if (seen) continue
                                 val detail = api.signDetail(aid)
-                                if (detail.optInt("status", 1) == 2) return@forEach // 已结束
-                                out.add(ActiveActivity(detail, course, act))
+                                if (detail.optInt("status", 1) == 2) continue // 已结束
+                                lock.withLock {
+                                    if (!found.containsKey(aid)) {
+                                        found[aid] = ActiveActivity(detail, course, act)
+                                    }
+                                }
                             }
                         }
                     }
                 }
             }.awaitAll()
         }
-        return out.toList()
+        return found.values.toList()
     }
 
     /** 按指定 aid 直接构造一个活动（扫码场景） */
@@ -144,8 +154,7 @@ object SignEngine {
         LogStore.add(
             "[诊断] $prefix aid=$aid ${if (act.isSignOut) "签退" else "签到"} " +
                 "needVCode=$needV 防作弊=$prevent openFace=$needFace openAddress=$needAddr " +
-                "signCode='${detail.optString("signCode")}' " +
-                "encLen=${detail.optString("enc").length} refreshEwm=${detail.optInt("ifRefreshEwm", 0)} " +
+                "signCode=${if (detail.optString("signCode").isBlank()) "无" else "有"} " +
                 "validate=${if (effectiveValidate.isNullOrBlank()) "无" else "有"}",
             true
         )
@@ -153,16 +162,27 @@ object SignEngine {
         if (needFace == 1) {
             return Outcome(acc.id, acc.display, "$prefix ｜ 要求人脸识别，无法自动签", false, SignStatus.BLOCKED)
         }
-        // 服务端明说要验证码，而人工还没过 —— 直接交给上层去弹窗
-        if (needV == 1 && effectiveValidate.isNullOrBlank()) {
-            return Outcome(acc.id, acc.display, "$prefix ｜ 需要人机验证", false, SignStatus.NEED_CAPTCHA)
+        // ifNeedVCode 只是个提示：真正的判据是提交时服务端返回裸的 validate，
+        // 所以不在这里提前拦下来（否则本可以签上的活动会被叫去滑验证码）。
+        if (needV == 1) {
+            LogStore.add("[诊断] $prefix 服务端标记 ifNeedVCode=1，提交时可能要人机验证", true)
         }
 
         val courseId = act.course.courseId.ifBlank { detail.optString("courseId") }
         val classId = act.course.classId.ifBlank { detail.optString("clazzId") }
         val opt2 = opt.withValidate(effectiveValidate)
 
-        return when (val r = api.signActivity(detail, courseId, classId, opt2)) {
+        val r = try {
+            api.signActivity(detail, courseId, classId, opt2)
+        } catch (e: com.xxt.sign.net.CxSessionExpiredException) {
+            return Outcome(
+                acc.id, acc.display,
+                "$prefix ｜ 会话已失效（${e.message}），请重新登录该账号",
+                false, SignStatus.FAILED
+            )
+        }
+
+        return when (r) {
             is SignOutcome.Done ->
                 Outcome(acc.id, acc.display, "$prefix ｜ ${r.msg}", true, SignStatus.DONE)
 
