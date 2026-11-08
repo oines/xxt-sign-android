@@ -50,7 +50,7 @@
                     android:insetTop="0dp"
                     android:insetBottom="0dp"
                     android:minHeight="44dp"
-                    android:text="拉取课程" />
+                    android:text="获取课程" />
 
                 <com.google.android.material.button.MaterialButton
                     android:id="@+id/btnStart"
@@ -276,7 +276,7 @@
             android:layout_width="match_parent"
             android:layout_height="match_parent"
             android:gravity="center"
-            android:text="先选择账号并拉取课程列表"
+            android:text="先选择账号并获取课程列表"
             android:textColor="@color/muted"
             android:textSize="14sp" />
     </FrameLayout>

@@ -249,10 +249,28 @@ class StudyEngine(
         var lastTick = System.currentTimeMillis()
         var forbidden = 0
         var endNotified = false
+        var endStartedAt = 0L
 
         while (currentCoroutineContext().isActive) {
-            // 上游原逻辑：play_time == duration 时每秒继续上报，直到 isPassed=true
-            if (playTime - lastLogged >= wait || playTime == duration) {
+            val now = System.currentTimeMillis()
+
+            // 客户端进度到末尾后，服务端可能还要几秒才确认；但不能无限等下去。
+            if (playTime >= duration) {
+                if (endStartedAt == 0L) endStartedAt = now
+                if (now - endStartedAt >= END_TIMEOUT_MS) {
+                    LogStore.add(
+                        "[刷课] ${job.name} 末尾等待服务端确认超时（${END_TIMEOUT_MS / 1000} 秒）",
+                        false
+                    )
+                    return VideoRunResult(false, 100, "服务端未确认完成")
+                }
+            } else {
+                endStartedAt = 0L
+            }
+
+            // 上游原逻辑：play_time == duration 时每秒继续上报，直到 isPassed=true；
+            // 这里额外用 END_TIMEOUT_MS 兜底，避免服务端一直不确认时卡死。
+            if (playTime - lastLogged >= wait || playTime >= duration) {
                 val r = logWithRtFallback(
                     course, job, status, playTime, duration, 3, chosenRt, rtCandidates
                 )
@@ -269,13 +287,34 @@ class StudyEngine(
                         }
                         LogStore.add("[刷课] 403，刷新会话后重试（$forbidden/$MAX_FORBIDDEN_RETRY）", false)
                         delay(2000)
-                        runCatching { api.relogin() }
-                        val fresh = api.videoStatus(job.objectId)
-                        if (fresh != null) {
-                            status = fresh
-                            duration = fresh.duration
-                            playTime = min(playTime, duration)
+                        val relogged = try {
+                            api.relogin()
+                        } catch (e: CancellationException) {
+                            throw e
+                        } catch (e: Exception) {
+                            LogStore.add("[刷课] 重新登录失败：${e.message}", false)
+                            false
                         }
+                        if (!relogged) {
+                            return VideoRunResult(false, lastPercent.coerceAtLeast(0), "重新登录失败")
+                        }
+                        val fresh = try {
+                            api.videoStatus(job.objectId)
+                        } catch (e: CancellationException) {
+                            throw e
+                        } catch (e: Exception) {
+                            LogStore.add("[刷课] 刷新视频状态失败：${e.message}", false)
+                            null
+                        }
+                        if (fresh == null) {
+                            return VideoRunResult(false, lastPercent.coerceAtLeast(0), "刷新视频状态失败")
+                        }
+                        status = fresh
+                        duration = fresh.duration
+                        playTime = min(playTime, duration)
+                        lastLogged = playTime
+                        wait = Random.nextDouble(30.0, 90.0).toInt()
+                        endStartedAt = 0L
                     }
 
                     r.code != 200 -> {
@@ -303,11 +342,11 @@ class StudyEngine(
                 }
             }
 
-            val now = System.currentTimeMillis()
-            val delta = ((now - lastTick) / 1000.0 * plan.speed).toInt()
+            val tickNow = System.currentTimeMillis()
+            val delta = ((tickNow - lastTick) / 1000.0 * plan.speed).toInt()
             if (delta > 0) {
                 playTime = min(duration, playTime + delta)
-                lastTick = now
+                lastTick = tickNow
                 emitProgress()
             }
             delay(1000)
@@ -353,4 +392,7 @@ class StudyEngine(
         private const val MAX_TRIES = 5
         private const val MAX_FORBIDDEN_RETRY = 2
         private const val RETRY_INTERVAL_MS = 1000L
+
+        /** 客户端进度到 100% 后，最多再等服务端确认多久 */
+        private const val END_TIMEOUT_MS = 3 * 60 * 1000L
     }}

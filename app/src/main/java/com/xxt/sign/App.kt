@@ -4,6 +4,7 @@ import android.app.Application
 import com.xxt.sign.core.AccountStore
 import com.xxt.sign.core.Settings
 import com.xxt.sign.study.StudyCheckStore
+import com.xxt.sign.study.StudyCourseStore
 
 class App : Application() {
     override fun onCreate() {
@@ -12,6 +13,7 @@ class App : Application() {
         AccountStore.init(this)
         Settings.init(this)
         StudyCheckStore.init(this)
+        StudyCourseStore.init(this)
     }
 
     companion object {

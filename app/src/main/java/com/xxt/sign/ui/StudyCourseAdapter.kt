@@ -20,6 +20,8 @@ data class StudyCourseItem(
     val chapters: List<StudyChapter>? = null,
     /** 章节 id -> 任务点检查结果 */
     val checks: Map<String, ChapterCheck> = emptyMap(),
+    /** 本次检查失败的章节 id；失败不写入缓存，避免被当成「未开放」 */
+    val failedChapters: Set<String> = emptySet(),
     /** 已勾选的章节 id */
     val selectedChapters: Set<String> = emptySet()
 )
@@ -48,19 +50,23 @@ class StudyCourseAdapter(
     inner class VH(private val b: ItemStudyCourseBinding) : RecyclerView.ViewHolder(b.root) {
         fun bind(item: StudyCourseItem) {
             val chapters = item.chapters.orEmpty()
+            val failedCount = item.failedChapters.size
             val checkedAll = chapters.isNotEmpty() &&
-                chapters.all { it.finished || item.checks.containsKey(it.id) }
+                chapters.all {
+                    it.finished || item.checks.containsKey(it.id) || it.id in item.failedChapters
+                }
             val allDone = checkedAll &&
                 chapters.all { it.finished || item.checks[it.id]?.allComplete == true }
             val videoDone = checkedAll &&
                 chapters.all { it.finished || item.checks[it.id]?.videoComplete == true }
             val videoPendingChapters = chapters.filter {
-                !it.finished && item.checks[it.id]?.videoPending == true
+                !it.finished && (item.checks[it.id]?.videoPending == true || it.id in item.failedChapters)
             }
             val selectedVideoCount = videoPendingChapters.count { it.id in item.selectedChapters }
 
             val status = when {
                 item.checking -> "检查任务点中…" to R.color.muted
+                failedCount > 0 -> "有 $failedCount 章检查失败" to R.color.err
                 chapters.isEmpty() && item.chapters != null -> "无章节" to R.color.muted
                 !checkedAll -> "未检查" to R.color.muted
                 allDone -> "全部任务点已完成" to R.color.study_blue
@@ -84,7 +90,10 @@ class StudyCourseAdapter(
                 item.loading -> "正在读取章节…"
                 item.chapters == null -> "章节未加载"
                 chapters.isEmpty() -> "没有章节"
+                failedCount > 0 && videoPendingChapters.isEmpty() -> "检查失败 $failedCount 章"
                 videoPendingChapters.isEmpty() -> "无未完成视频"
+                failedCount > 0 ->
+                    "视频待刷 ${selectedVideoCount}/${videoPendingChapters.size} 章 · 失败 $failedCount 章"
                 else -> "视频待刷 ${selectedVideoCount}/${videoPendingChapters.size} 章"
             }
             b.tvSub.text = listOfNotNull(
@@ -111,6 +120,7 @@ class StudyCourseAdapter(
                         index + 1,
                         ch,
                         item.checks[ch.id],
+                        ch.id in item.failedChapters,
                         ch.id in item.selectedChapters,
                         item.course
                     )
@@ -133,12 +143,14 @@ class StudyCourseAdapter(
             index: Int,
             chapter: StudyChapter,
             check: ChapterCheck?,
+            failed: Boolean,
             checked: Boolean,
             course: StudyCourse
         ) {
             val ctx = b.root.context
             val (label, color) = when {
                 chapter.finished -> "全部完成" to R.color.study_blue
+                failed -> "检查失败" to R.color.err
                 check == null -> "未检查" to R.color.muted
                 check.notOpen -> "未开放" to R.color.muted
                 check.allComplete -> "全部完成" to R.color.study_blue
@@ -155,7 +167,7 @@ class StudyCourseAdapter(
                 text = "$index. ${chapter.title}$suffix"
                 textSize = 12f
                 isChecked = checked
-                isEnabled = !chapter.finished && (check == null || check.videoPending)
+                isEnabled = !chapter.finished && (check == null || check.videoPending || failed)
                 setPadding(dp(4), dp(2), 0, dp(2))
                 setTextColor(ctx.getColor(color))
                 setOnCheckedChangeListener { _, isChecked ->

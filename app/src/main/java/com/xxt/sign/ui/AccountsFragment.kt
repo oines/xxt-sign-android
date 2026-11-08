@@ -20,6 +20,7 @@ import com.xxt.sign.databinding.DialogAccountBinding
 import com.xxt.sign.databinding.FragmentAccountsBinding
 import com.xxt.sign.net.CxSession
 import com.xxt.sign.sign.SignEngine
+import com.xxt.sign.study.StudyCourseStore
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -67,7 +68,11 @@ class AccountsFragment : Fragment() {
                     .setTitle("删除账号")
                     .setMessage("确定删除 ${acc.display} 吗？")
                     .setPositiveButton("删除") { _, _ ->
-                        if (Settings.studyAccountId == acc.id) Settings.studyAccountId = ""
+                        if (Settings.studyAccountId == acc.id) {
+                            Settings.studyAccountId = ""
+                            Settings.studySelectedChapters = emptySet()
+                        }
+                        StudyCourseStore.clear(acc.id)
                         AccountStore.remove(acc.id)
                     }
                     .setNegativeButton("取消", null)

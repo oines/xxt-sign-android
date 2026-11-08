@@ -26,22 +26,26 @@ import com.xxt.sign.study.StudyApi
 import com.xxt.sign.study.StudyChapter
 import com.xxt.sign.study.StudyCheckStore
 import com.xxt.sign.study.StudyCourse
+import com.xxt.sign.study.StudyCourseStore
 import com.xxt.sign.study.StudyManager
 import com.xxt.sign.study.StudyPlan
 import com.xxt.sign.study.StudyService
 import com.xxt.sign.study.StudyState
 import com.xxt.sign.study.StudyTaskItem
 import com.xxt.sign.study.StudyTaskStatus
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.text.SimpleDateFormat
+import java.util.Date
 import java.util.Locale
 import kotlin.math.abs
 
 /**
  * 刷课页：
- * 选账号（账号页）→ 拉课程 → 展开课程加载章节 → 勾选章节 → 开始。
- * 只处理视频任务点；任务只在 App 前台运行。
+ * 选账号（账号页）→ 自动载入本地课程缓存/手动刷新 → 展开课程加载章节 → 勾选章节 → 开始。
+ * 只处理视频任务点；任务通过前台服务在后台继续运行。
  */
 class StudyFragment : Fragment() {
 
@@ -159,7 +163,13 @@ class StudyFragment : Fragment() {
                 lastAccountId = ""
                 api = null
                 Settings.studySelectedChapters = emptySet()
-                if (items.isNotEmpty()) clearCourses("账号已移除或未选择，请重新选择")
+            }
+            if (items.isNotEmpty()) {
+                clearCourses("账号已移除或未选择，请重新选择")
+            } else {
+                b.tvEmpty.text = "请先在「账号」页勾选刷课账号"
+                b.tvEmpty.visibility = View.VISIBLE
+                updateCoursesHeader()
             }
             return
         }
@@ -176,9 +186,66 @@ class StudyFragment : Fragment() {
             if (StudyManager.isRunning()) StudyManager.stop("账号已切换，刷课已停止")
             api = null
             Settings.studySelectedChapters = emptySet()
-            if (items.isNotEmpty()) clearCourses("已切换账号，请重新拉取课程")
+            restoreCachedCourses(selected, switched = true)
+        } else if (items.isEmpty()) {
+            // 首次进入、进程重启或从其他 Tab 回来：优先恢复本地缓存，不主动发网络请求
+            restoreCachedCourses(selected)
         }
     }
+
+    /** 从本地缓存恢复课程/章节/勾选，进入页面时不再等待课程接口 */
+    private fun restoreCachedCourses(account: Account, switched: Boolean = false) {
+        val snapshot = StudyCourseStore.load(account.id)
+        if (snapshot == null || snapshot.courses.isEmpty()) {
+            items.clear()
+            adapter.submit(emptyList())
+            b.tvEmpty.text = "暂无课程缓存\n点「获取课程」从服务器拉取"
+            b.tvEmpty.visibility = View.VISIBLE
+            b.tvStatus.text = if (switched) {
+                "已切换账号，暂无课程缓存，点「获取课程」从服务器拉取"
+            } else {
+                "暂无课程缓存，点「获取课程」从服务器拉取"
+            }
+            b.tvCheckProgress.visibility = View.GONE
+            b.checkProgress.visibility = View.GONE
+            updateCoursesHeader()
+            return
+        }
+
+        val storedChecks = StudyCheckStore.load(account.id)
+        val storedSelection = Settings.studySelectedChapters
+        items.clear()
+        items.addAll(snapshot.courses.map { course ->
+            val prefix = "${course.key}#"
+            val checks = storedChecks[course.key].orEmpty()
+            val selected = storedSelection
+                .filter { it.startsWith(prefix) }
+                .map { it.substringAfterLast('#') }
+                .filter { checks[it]?.videoComplete != true }
+                .toSet()
+            StudyCourseItem(
+                course = course,
+                chapters = snapshot.chapters[course.key]?.takeIf { it.isNotEmpty() },
+                checks = checks,
+                selectedChapters = selected
+            )
+        })
+        persistSelection()
+        adapter.submit(items.toList())
+        b.tvEmpty.visibility = View.GONE
+        b.tvStatus.text = buildString {
+            append(if (switched) "已切换账号，载入本地缓存 " else "已载入本地缓存 ")
+            append(snapshot.courses.size).append(" 门课程")
+            if (snapshot.savedAt > 0) {
+                append("（").append(formatCacheTime(snapshot.savedAt)).append("）")
+            }
+            append("，点「刷新课程」获取最新")
+        }
+        updateCoursesHeader()
+    }
+
+    private fun formatCacheTime(time: Long): String =
+        SimpleDateFormat("MM-dd HH:mm", Locale.getDefault()).format(Date(time))
 
     // ------------------------------------------------------------ 课程
 
@@ -189,67 +256,100 @@ class StudyFragment : Fragment() {
         }
         if (StudyManager.isRunning()) return toast("刷课进行中")
         if (loadingCourses) return
+        if (items.any { it.checking || it.loading }) return toast("正在检查课程，请稍候")
 
         val fetchAccountId = account.id
+        val hadCourses = items.isNotEmpty()
         loadingCourses = true
-        b.btnFetch.isEnabled = false
+        updateFetchButton()
         b.progress.visibility = View.VISIBLE
         b.progress.isIndeterminate = true
-        b.tvStatus.text = "正在登录并拉取课程…"
+        b.tvStatus.text = if (hadCourses) "正在刷新课程列表…" else "正在登录并获取课程…"
         b.tvCheckProgress.visibility = View.GONE
         b.checkProgress.visibility = View.GONE
 
         viewLifecycleOwner.lifecycleScope.launch {
-            val result = withContext(Dispatchers.IO) {
-                runCatching {
-                    val (session, err) = SignEngine.sessionFor(account)
-                    if (session == null) throw IllegalStateException("登录失败：$err")
-                    val studyApi = StudyApi(session)
-                    api = studyApi
-                    studyApi.getCourses()
-                }
-            }
-
-            loadingCourses = false
-            b.btnFetch.isEnabled = !StudyManager.isRunning()
-            b.progress.isIndeterminate = false
-            b.progress.visibility = View.GONE
-
-            result.onSuccess { courses ->
-                if (Settings.studyAccountId != fetchAccountId) {
-                    api = null
-                    return@onSuccess
-                }
-                if (courses.isEmpty()) {
-                    clearCourses("没有拉到课程（会话可能已失效）")
-                    return@onSuccess
+            try {
+                val result = withContext(Dispatchers.IO) {
+                    runCatching {
+                        val (session, err) = SignEngine.sessionFor(account)
+                        if (session == null) throw IllegalStateException("登录失败：$err")
+                        val studyApi = StudyApi(session)
+                        api = studyApi
+                        studyApi.getCourses()
+                    }
                 }
 
-                val stored = Settings.studySelectedChapters
-                val storedChecks = StudyCheckStore.load(account.id)
-                items.clear()
-                items.addAll(courses.map { course ->
-                    val prefix = "${course.key}#"
-                    val checks = storedChecks[course.key].orEmpty()
-                    val selected = stored
-                        .filter { it.startsWith(prefix) }
-                        .map { it.substringAfterLast('#') }
-                        .filter { checks[it]?.videoComplete != true }
-                        .toSet()
-                    StudyCourseItem(
-                        course = course,
-                        checks = checks,
-                        selectedChapters = selected
+                result.onSuccess { courses ->
+                    if (_b == null) return@onSuccess
+                    if (Settings.studyAccountId != fetchAccountId) {
+                        api = null
+                        return@onSuccess
+                    }
+                    if (courses.isEmpty()) {
+                        if (items.isEmpty()) {
+                            clearCourses("没有拉到课程（会话可能已失效）")
+                        } else {
+                            b.tvStatus.text = "没有拉到课程，继续显示本地缓存"
+                            toast("没有拉到课程，继续显示缓存")
+                        }
+                        return@onSuccess
+                    }
+
+                    val now = System.currentTimeMillis()
+                    val oldByKey = items.associateBy { it.course.key }
+                    val cached = StudyCourseStore.load(account.id)
+                    val chaptersByKey = LinkedHashMap<String, List<StudyChapter>>()
+                    courses.forEach { course ->
+                        val chapters = oldByKey[course.key]?.chapters
+                            ?: cached?.chapters?.get(course.key)
+                        if (!chapters.isNullOrEmpty()) chaptersByKey[course.key] = chapters
+                    }
+
+                    val stored = Settings.studySelectedChapters
+                    val storedChecks = StudyCheckStore.load(account.id)
+                    items.clear()
+                    items.addAll(courses.map { course ->
+                        val prefix = "${course.key}#"
+                        val checks = storedChecks[course.key].orEmpty()
+                        val selected = stored
+                            .filter { it.startsWith(prefix) }
+                            .map { it.substringAfterLast('#') }
+                            .filter { checks[it]?.videoComplete != true }
+                            .toSet()
+                        StudyCourseItem(
+                            course = course,
+                            expanded = oldByKey[course.key]?.expanded == true,
+                            chapters = chaptersByKey[course.key],
+                            checks = checks,
+                            selectedChapters = selected
+                        )
+                    })
+                    StudyCourseStore.saveCourses(
+                        accountId = account.id,
+                        courses = courses,
+                        chapters = chaptersByKey,
+                        savedAt = now
                     )
-                })
-                persistSelection()
-                adapter.submit(items.toList())
-                b.tvEmpty.visibility = View.GONE
-                b.tvStatus.text = "已拉取 ${courses.size} 门课程，展开后勾选章节"
-                updateCoursesHeader()
-            }.onFailure {
-                b.tvStatus.text = "拉取失败：${it.message}"
-                toast("拉取失败：${it.message}")
+                    persistSelection()
+                    adapter.submit(items.toList())
+                    b.tvEmpty.visibility = View.GONE
+                    b.tvStatus.text =
+                        "已刷新 ${courses.size} 门课程（${formatCacheTime(now)}），展开后检查任务点"
+                    updateCoursesHeader()
+                }.onFailure {
+                    if (_b == null) return@onFailure
+                    b.tvStatus.text = "刷新失败：${it.message}" +
+                        if (items.isNotEmpty()) "（继续显示本地缓存）" else ""
+                    toast("刷新失败：${it.message}")
+                }
+            } finally {
+                loadingCourses = false
+                if (_b != null) {
+                    b.progress.isIndeterminate = false
+                    b.progress.visibility = View.GONE
+                    updateFetchButton()
+                }
             }
         }
     }
@@ -267,6 +367,7 @@ class StudyFragment : Fragment() {
             return
         }
         if (item.loading || item.checking) return
+        if (loadingCourses) return toast("正在刷新课程，请稍候")
         if (StudyManager.isRunning()) return toast("刷课进行中")
 
         viewLifecycleOwner.lifecycleScope.launch {
@@ -274,7 +375,10 @@ class StudyFragment : Fragment() {
             checkItem(index, studyApi)
             val now = items.getOrNull(index) ?: return@launch
             val pending = now.chapters.orEmpty()
-                .filter { !it.finished && now.checks[it.id]?.videoPending == true }
+                .filter {
+                    !it.finished &&
+                        (now.checks[it.id]?.videoPending == true || it.id in now.failedChapters)
+                }
                 .map { it.id }
                 .toSet()
             if (pending.isEmpty()) {
@@ -301,6 +405,7 @@ class StudyFragment : Fragment() {
     }
 
     private fun onExpand(course: StudyCourse) {
+        if (loadingCourses) return toast("正在刷新课程，请稍候")
         val index = items.indexOfFirst { it.course.key == course.key }
         if (index < 0) return
         val item = items[index]
@@ -334,8 +439,9 @@ class StudyFragment : Fragment() {
         }
     }
 
-    /** 手动刷新：清掉这一门的本地检查缓存后重新检查 */
+    /** 手动刷新单门课：重读章节并清掉任务点缓存，随后重新检查 */
     private fun onRefreshCourse(course: StudyCourse) {
+        if (loadingCourses) return toast("正在刷新课程，请稍候")
         val index = items.indexOfFirst { it.course.key == course.key }
         if (index < 0) return
         val item = items[index]
@@ -344,9 +450,15 @@ class StudyFragment : Fragment() {
         val account = selectedAccount() ?: return toast("请先在「账号」页勾选刷课账号")
 
         StudyCheckStore.clearCourse(account.id, course.key)
-        items[index] = item.copy(checks = emptyMap(), checking = false)
+        items[index] = item.copy(
+            checks = emptyMap(),
+            failedChapters = emptySet(),
+            chapters = null,
+            expanded = true,
+            checking = false
+        )
         adapter.submit(items.toList())
-        checkCourse(index)
+        loadChapters(course, checkAfter = true)
     }
 
     /** 从本地持久化恢复检查状态（任务完成、切换账号、重启 App 后） */
@@ -386,6 +498,8 @@ class StudyFragment : Fragment() {
 
     /** 只负责把章节列表读出来；checkAfter=true 时读完立即检查这一门 */
     private fun loadChapters(course: StudyCourse, checkAfter: Boolean = false) {
+        if (loadingCourses) return toast("正在刷新课程，请稍候")
+        val accountId = selectedAccount()?.id ?: return
         val index = items.indexOfFirst { it.course.key == course.key }
         if (index < 0) return
         if (items[index].loading) return
@@ -407,22 +521,33 @@ class StudyFragment : Fragment() {
             val result = withContext(Dispatchers.IO) {
                 runCatching { studyApi.getChapters(course) }
             }
+            if (_b == null) return@launch
+            if (selectedAccount()?.id != accountId) return@launch
+
             val now = items.indexOfFirst { it.course.key == course.key }
-            if (now >= 0) {
-                val loaded = result.getOrDefault(emptyList())
-                val existing = items[now].selectedChapters
-                items[now] = items[now].copy(
-                    loading = false,
-                    expanded = true,
-                    chapters = loaded,
-                    selectedChapters = existing.intersect(loaded.map { it.id }.toSet())
-                )
+            if (now < 0) return@launch
+            val loaded = result.getOrNull()
+            if (loaded == null) {
+                items[now] = items[now].copy(loading = false)
                 adapter.submit(items.toList())
-                persistSelection()
-                updateCoursesHeader()
-                if (checkAfter) checkItem(now, studyApi)
+                toast("章节读取失败：${result.exceptionOrNull()?.message}")
+                return@launch
             }
-            result.onFailure { toast("章节读取失败：${it.message}") }
+
+            StudyCourseStore.putChapters(accountId, course.key, loaded)
+            val existing = items[now].selectedChapters
+            val loadedIds = loaded.map { it.id }.toSet()
+            items[now] = items[now].copy(
+                loading = false,
+                expanded = true,
+                chapters = loaded,
+                failedChapters = items[now].failedChapters.intersect(loadedIds),
+                selectedChapters = existing.intersect(loadedIds)
+            )
+            adapter.submit(items.toList())
+            persistSelection()
+            updateCoursesHeader()
+            if (checkAfter) checkItem(now, studyApi)
         }
     }
 
@@ -435,7 +560,16 @@ class StudyFragment : Fragment() {
         adapter.submit(items.toList())
 
         val chapters = ensureChaptersLoaded(index, studyApi)
+        if (_b == null) return
+        if (selectedAccount()?.id != accountId) return
+        if (chapters == null) {
+            items[index] = items[index].copy(checking = false)
+            adapter.submit(items.toList())
+            return
+        }
         val checks = items[index].checks.toMutableMap()
+        val failedIds = items[index].failedChapters.toMutableSet()
+        var failedCount = 0
         var done = 0
         val total = chapters.size
 
@@ -447,49 +581,100 @@ class StudyFragment : Fragment() {
         b.checkProgress.setProgressCompat(0, false)
 
         for (chapter in chapters) {
+            if (selectedAccount()?.id != accountId) return
             done++
             b.tvCheckProgress.text = "检查任务点 $done/$total：${chapter.title}"
             if (chapter.finished) {
                 checks[chapter.id] = ChapterCheck(1, 1, 1, 1)
+                failedIds.remove(chapter.id)
                 b.checkProgress.setProgressCompat(done, true)
                 continue
             }
             if (checks.containsKey(chapter.id)) {
+                failedIds.remove(chapter.id)
                 b.checkProgress.setProgressCompat(done, true)
                 continue
             }
-            val check = withContext(Dispatchers.IO) {
+            val result = withContext(Dispatchers.IO) {
                 runCatching { studyApi.checkChapter(course, chapter) }
-                    .getOrElse { ChapterCheck(0, 0, 0, 0, notOpen = true) }
             }
+            if (_b == null) return
+            if (selectedAccount()?.id != accountId) return
+            result.exceptionOrNull()?.let { if (it is CancellationException) throw it }
+            val check = result.getOrNull()
+            if (check == null) {
+                failedCount++
+                failedIds.add(chapter.id)
+                val reason = result.exceptionOrNull()?.message ?: "未知错误"
+                LogStore.add(
+                    "[刷课] 检查失败：${course.title} · ${chapter.title}（$reason）",
+                    false
+                )
+                items[index] = items[index].copy(failedChapters = failedIds.toSet())
+                adapter.submit(items.toList())
+                b.checkProgress.setProgressCompat(done, true)
+                continue
+            }
+            failedIds.remove(chapter.id)
             checks[chapter.id] = check
-            items[index] = items[index].copy(checks = checks.toMap())
+            items[index] = items[index].copy(
+                checks = checks.toMap(),
+                failedChapters = failedIds.toSet()
+            )
             adapter.submit(items.toList())
             b.checkProgress.setProgressCompat(done, true)
         }
-        items[index] = items[index].copy(checking = false, checks = checks.toMap())
+        if (selectedAccount()?.id != accountId) return
+        items[index] = items[index].copy(
+            checking = false,
+            checks = checks.toMap(),
+            failedChapters = failedIds.toSet()
+        )
         val pruned = pruneSelection(index)
         adapter.submit(items.toList())
         if (pruned) {
             persistSelection()
             updateCoursesHeader()
         }
+        // 失败章节不写入缓存；只持久化真正检查成功的章节。
         StudyCheckStore.putCourse(accountId, course.key, checks.toMap())
         b.checkProgress.visibility = View.GONE
-        b.tvCheckProgress.text = "检查完成：${course.title}（${total} 章）"
-        LogStore.add("[刷课] 检查完成：${course.title}（${checks.size} 章）", true)
+        b.tvCheckProgress.text = if (failedCount > 0) {
+            "检查完成：${course.title}（${total} 章，$failedCount 章失败）"
+        } else {
+            "检查完成：${course.title}（${total} 章）"
+        }
+        LogStore.add(
+            "[刷课] 检查完成：${course.title}（${checks.size} 章" +
+                if (failedCount > 0) "，$failedCount 章失败）" else "）",
+            failedCount == 0
+        )
+        if (failedCount > 0) {
+            toast("$failedCount 个章节检查失败，可点课程右侧「刷新」重试")
+        }
     }
 
-    /** 确保章节已加载；返回章节列表 */
-    private suspend fun ensureChaptersLoaded(index: Int, studyApi: StudyApi): List<StudyChapter> {
-        val item = items.getOrNull(index) ?: return emptyList()
+    /** 确保章节已加载；null 表示读取失败，空列表表示确实没有章节 */
+    private suspend fun ensureChaptersLoaded(index: Int, studyApi: StudyApi): List<StudyChapter>? {
+        val item = items.getOrNull(index) ?: return null
         item.chapters?.let { return it }
+        val accountId = selectedAccount()?.id ?: return null
 
         items[index] = item.copy(expanded = true, loading = true)
         adapter.submit(items.toList())
-        val loaded = withContext(Dispatchers.IO) {
-            runCatching { studyApi.getChapters(item.course) }.getOrDefault(emptyList())
+        val result = withContext(Dispatchers.IO) {
+            runCatching { studyApi.getChapters(item.course) }
         }
+        if (_b == null) return null
+        if (selectedAccount()?.id != accountId) return null
+        val loaded = result.getOrNull()
+        if (loaded == null) {
+            items[index] = items[index].copy(loading = false)
+            adapter.submit(items.toList())
+            toast("章节读取失败：${result.exceptionOrNull()?.message}")
+            return null
+        }
+        StudyCourseStore.putChapters(accountId, item.course.key, loaded)
         items[index] = items[index].copy(loading = false, chapters = loaded)
         adapter.submit(items.toList())
         return loaded
@@ -497,7 +682,8 @@ class StudyFragment : Fragment() {
 
     /** 全选/清空：只对已展开/已检查的课程生效，只选视频任务点未完成的章节 */
     private fun selectAll(checked: Boolean) {
-        if (items.isEmpty()) return toast("请先拉取课程")
+        if (loadingCourses) return toast("正在刷新课程，请稍候")
+        if (items.isEmpty()) return toast("请先获取课程")
         if (!checked) {
             for (i in items.indices) items[i] = items[i].copy(selectedChapters = emptySet())
             adapter.submit(items.toList())
@@ -512,7 +698,11 @@ class StudyFragment : Fragment() {
         for (i in items.indices) {
             if (items[i].chapters.isNullOrEmpty()) continue
             val pending = items[i].chapters.orEmpty()
-                .filter { !it.finished && items[i].checks[it.id]?.videoPending == true }
+                .filter {
+                    !it.finished &&
+                        (items[i].checks[it.id]?.videoPending == true ||
+                            it.id in items[i].failedChapters)
+                }
                 .map { it.id }
                 .toSet()
             items[i] = items[i].copy(selectedChapters = pending)
@@ -551,9 +741,10 @@ class StudyFragment : Fragment() {
         }.toSet()
     }
 
-    private fun clearCourses(message: String) {
+    private fun clearCourses(message: String, emptyText: String = message) {
         items.clear()
         adapter.submit(emptyList())
+        b.tvEmpty.text = emptyText
         b.tvEmpty.visibility = View.VISIBLE
         b.tvStatus.text = message
         b.tvCheckProgress.visibility = View.GONE
@@ -565,9 +756,17 @@ class StudyFragment : Fragment() {
         val courseCount = items.count { it.selectedChapters.isNotEmpty() }
         val chapterCount = items.sumOf { it.selectedChapters.size }
         b.tvCourses.text = when {
-            items.isEmpty() -> "未拉取课程"
+            items.isEmpty() -> "未获取课程"
             else -> "已选 $chapterCount 章 / $courseCount 门课"
         }
+        updateFetchButton()
+    }
+
+    /** 顶部课程按钮：无列表时是「获取课程」，有列表时是手动「刷新课程」 */
+    private fun updateFetchButton() {
+        if (_b == null) return
+        b.btnFetch.isEnabled = !loadingCourses && !StudyManager.isRunning()
+        b.btnFetch.text = if (items.isEmpty()) "获取课程" else "刷新课程"
     }
 
     // ------------------------------------------------------------ 启动
@@ -584,6 +783,7 @@ class StudyFragment : Fragment() {
             .filter { selection[it.course.key]?.isNotEmpty() == true }
             .map { it.course }
         if (selectedCourses.isEmpty()) return toast("请先勾选至少一个章节")
+        if (loadingCourses) return toast("正在刷新课程，请稍候")
         if (StudyManager.isRunning()) return toast("刷课进行中")
         if (items.any { it.checking || it.loading }) return toast("正在检查任务点，请稍候")
 
@@ -655,8 +855,8 @@ class StudyFragment : Fragment() {
             b.progress.isIndeterminate = true
         }
 
-        b.btnFetch.isEnabled = !state.running
-        b.btnStart.isEnabled = !state.running
+        updateFetchButton()
+        b.btnStart.isEnabled = !state.running && !loadingCourses
         b.btnStop.isEnabled = state.running
     }
 
