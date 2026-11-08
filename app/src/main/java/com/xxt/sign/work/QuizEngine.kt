@@ -76,6 +76,8 @@ class QuizEngine(
         val outcomes = mutableListOf<QuestionOutcome>()
         val submitAnswers = LinkedHashMap<String, String>()
         val provider = answers
+        // 成本保护：一卷里 LLM 最多调「题量」次
+        provider?.beginPaper(page.questions.size)
 
         page.questions.forEachIndexed { index, q ->
             val stem = decode(decoder, q.stem)
@@ -102,7 +104,8 @@ class QuizEngine(
                     )
                 }
                 answer == null -> {
-                    log("[测验] 第${no}题 ${WorkQuestion.typeName(q.type)} 题库未命中，留空", false)
+                    val why = provider?.lastLlmError?.takeIf { it.isNotBlank() }?.let { "（$it）" }.orEmpty()
+                    log("[测验] 第${no}题 ${WorkQuestion.typeName(q.type)} 题库/LLM 都没命中$why，留空", false)
                     outcomes.add(
                         QuestionOutcome(q.qid, q.type, WorkParser.shortStem(stem.text), "", "未命中", true)
                     )
@@ -148,9 +151,13 @@ class QuizEngine(
         val mode = if (config.storeOnly) "已暂存（未交卷）" else "已提交"
         val rateText = "命中 ${submitAnswers.size}/$total（${(hitRate * 100).toInt()}%）"
         val low = hitRate < config.hitThreshold
+        val bank = outcomes.count { it.answer.isNotBlank() && it.source.startsWith("题库") }
+        val byLlm = outcomes.count { it.answer.isNotBlank() && it.source.startsWith("LLM") }
+        val blank = (total - submitAnswers.size).coerceAtLeast(0)
         val msg = buildString {
             if (submit.ok) append(mode).append("：").append(rateText)
             else append("提交失败：").append(submit.message).append("｜").append(rateText)
+            append("｜题库 ").append(bank).append(" / LLM ").append(byLlm).append(" / 留空 ").append(blank)
             if (low) append("｜低置信，建议回看")
         }
         log("[测验] ${job.chapterTitle} · ${page.title} $msg", submit.ok && !low)

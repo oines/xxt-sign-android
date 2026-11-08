@@ -13,22 +13,33 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 /**
- * 题库。
+ * 答案来源。三种模式，顺序写死在代码里，不会被配置搞反：
  *
- * 支持三种来源，都不需要学习通登录态，走公网 HTTP：
- *  - tikuAdapter：POST {endpoint}/adapter-service/search，body `{"question":"…","options":[…],"type":0}`，
- *    读 `answer.answerKey` / `answer.answerText`
- *  - 言溪 tk.enncy.cn
- *  - 柠檬 lemtk.xyz
+ *  - [Mode.BANK_FIRST]（auto / tikuadapter / yanxi / lemon）
+ *      题库优先；没命中才走大模型（LLM 没配 key 就留空）
+ *  - [Mode.LLM_ONLY]（provider = llm）
+ *      完全不查题库，每题直接问大模型
+ *  - [Mode.OFF]（off / none / 留空）
+ *      都不查，只暂存/留空
  *
- * 没配题库就返回 null —— **不猜**，对应题留空。
+ * 题库本身支持 tikuAdapter / 言溪 / 柠檬，都是公网 HTTP、不需要学习通登录态。
  */
 class AnswerProvider(
     private val provider: String,
     private val endpoint: String,
     private val token: String,
+    private val llm: LlmClient? = null,
     private val client: OkHttpClient = Http.base
 ) {
+
+    enum class Mode { BANK_FIRST, LLM_ONLY, OFF }
+
+    val mode: Mode
+        get() = when (provider.trim().lowercase()) {
+            "", "off", "none", "disable" -> Mode.OFF
+            "llm", "off+llm" -> Mode.LLM_ONLY
+            else -> Mode.BANK_FIRST
+        }
 
     private val limiter = RequestLimiter(300L, 200L)
 
@@ -46,20 +57,50 @@ class AnswerProvider(
             else -> provider.trim().lowercase()
         }
 
-    val configured: Boolean
+    private val bankReady: Boolean
         get() = effective != "off" && (effective != "tikuadapter" || endpoint.isNotBlank())
+
+    private val llmReady: Boolean
+        get() = llm?.enabled == true
+
+    val configured: Boolean
+        get() = when (mode) {
+            Mode.OFF -> false
+            Mode.LLM_ONLY -> llmReady
+            Mode.BANK_FIRST -> bankReady || llmReady
+        }
+
+    /** 一卷开始：把这一卷的 LLM 预算（不超过题量）重置 */
+    fun beginPaper(questionCount: Int) {
+        llm?.beginPaper(questionCount)
+    }
+
+    /** 最近一次 LLM 失败原因，给日志用 */
+    val lastLlmError: String get() = llm?.lastError.orEmpty()
 
     suspend fun search(question: WorkQuestion): QuizAnswer? = withContext(Dispatchers.IO) {
         if (!configured) return@withContext null
-        runCatching {
-            limiter.acquire()
-            when (effective) {
-                "tikuadapter" -> tikuAdapter(question)
-                "yanxi" -> getStyle("https://${host(endpoint, "tk.enncy.cn")}/query", question, "言溪")
-                "lemon" -> getStyle("https://${host(endpoint, "api.lemtk.xyz")}/api/v1/cx", question, "柠檬")
-                else -> null
-            }
-        }.getOrNull()
+
+        // 1) 题库优先（纯 LLM 模式跳过）
+        if (mode == Mode.BANK_FIRST && bankReady) {
+            val fromBank = runCatching {
+                limiter.acquire()
+                when (effective) {
+                    "tikuadapter" -> tikuAdapter(question)
+                    "yanxi" -> getStyle("https://${host(endpoint, "tk.enncy.cn")}/query", question, "言溪")
+                    "lemon" -> getStyle("https://${host(endpoint, "api.lemtk.xyz")}/api/v1/cx", question, "柠檬")
+                    else -> null
+                }
+            }.getOrNull()
+            if (fromBank != null) return@withContext fromBank
+        }
+
+        // 2) 题库没命中（或本来就是纯 LLM 模式）才问大模型
+        if (llmReady) {
+            val fromLlm = runCatching { llm?.answer(question) }.getOrNull()
+            if (fromLlm != null) return@withContext fromLlm
+        }
+        null
     }
 
     private fun host(raw: String, def: String): String =
@@ -105,7 +146,7 @@ class AnswerProvider(
         val root = runCatching { JSONObject(text) }.getOrNull() ?: return null
         val raw = findAnswerString(root) ?: return null
         val normalized = AnswerNormalizer.normalize(raw, q) ?: return null
-        return QuizAnswer(normalized, source)
+        return QuizAnswer(normalized, "题库·$source")
     }
 
     /** 在 JSON 里找第一个看起来像答案的内容 */

@@ -179,6 +179,33 @@ object Settings {
         get() = sp.getInt("quizGap", 90).coerceIn(30, 1800)
         set(v) = sp.edit().putInt("quizGap", v.coerceIn(30, 1800)).apply()
 
+    // ------------------------------------------------------------ LLM 兜底
+
+    /** LLM 开关。默认关；填了 key 并且打开才会用 */
+    var quizLlmEnabled: Boolean
+        get() = sp.getBoolean("quizLlmEnabled", false)
+        set(v) = sp.edit().putBoolean("quizLlmEnabled", v).apply()
+
+    /** OpenAI 兼容接口的 key（DeepSeek 默认） */
+    var quizLlmKey: String
+        get() = sp.getString("quizLlmKey", "") ?: ""
+        set(v) = sp.edit().putString("quizLlmKey", v).apply()
+
+    /** baseUrl，DeepSeek 是 https://api.deepseek.com */
+    var quizLlmBaseUrl: String
+        get() = sp.getString("quizLlmBaseUrl", "https://api.deepseek.com") ?: "https://api.deepseek.com"
+        set(v) = sp.edit().putString("quizLlmBaseUrl", v).apply()
+
+    /** 模型名，DeepSeek 是 deepseek-chat */
+    var quizLlmModel: String
+        get() = sp.getString("quizLlmModel", "deepseek-chat") ?: "deepseek-chat"
+        set(v) = sp.edit().putString("quizLlmModel", v).apply()
+
+    /** LLM 每天最多调用多少次，超过就这卷只用题库 */
+    var quizLlmDailyLimit: Int
+        get() = sp.getInt("quizLlmDailyLimit", 200).coerceIn(0, 5000)
+        set(v) = sp.edit().putInt("quizLlmDailyLimit", v.coerceIn(0, 5000)).apply()
+
     /** 字体反解的最低相似度，低于它算「待复核」，不采信 */
     var quizFontThreshold: Float
         get() = sp.getFloat("quizFontThreshold", 0.86f).coerceIn(0.5f, 0.99f)

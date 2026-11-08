@@ -21,6 +21,7 @@ import com.xxt.sign.work.AndroidGlyphSource
 import com.xxt.sign.work.AnswerProvider
 import com.xxt.sign.work.FontBytes
 import com.xxt.sign.work.FontDecoder
+import com.xxt.sign.work.LlmClient
 import com.xxt.sign.work.QuizAutoRunner
 import com.xxt.sign.work.QuizConfig
 import com.xxt.sign.work.QuizEngine
@@ -220,6 +221,18 @@ class MonitorService : Service() {
 
     // ------------------------------------------------------ 挂机答题
 
+    /** LLM 只在开关打开且填了 key 时启用 */
+    private fun buildLlm(): LlmClient? {
+        if (!Settings.quizLlmEnabled) return null
+        val key = Settings.quizLlmKey.trim()
+        if (key.isEmpty()) return null
+        return LlmClient(
+            apiKey = key,
+            baseUrl = Settings.quizLlmBaseUrl,
+            model = Settings.quizLlmModel
+        )
+    }
+
     private fun maybeStartQuizPatrol() {
         if (!Settings.quizAutoMode) return
         val acc = AccountStore.get(Settings.studyAccountId) ?: return
@@ -256,7 +269,12 @@ class MonitorService : Service() {
         )
         val engine = QuizEngine(
             api = WorkApi(session),
-            answers = AnswerProvider(Settings.quizProvider, Settings.quizEndpoint, Settings.quizToken),
+            answers = AnswerProvider(
+                provider = Settings.quizProvider,
+                endpoint = Settings.quizEndpoint,
+                token = Settings.quizToken,
+                llm = buildLlm()
+            ),
             config = config,
             decoderFactory = { b64 ->
                 FontBytes.decode(b64)?.let { bytes ->
@@ -286,12 +304,16 @@ class MonitorService : Service() {
             }
         }
         val submitted = pass.results.count { it.submitted }
+        val bank = pass.results.sumOf { it.bankHits }
+        val byLlm = pass.results.sumOf { it.llmHits }
+        val blank = pass.results.sumOf { it.blanks }
         val title = when {
             pass.pendingHuman > 0 -> "章节测验：$submitted 份已交，${pass.pendingHuman} 份需人工"
             submitted > 0 -> "章节测验：已自动交 $submitted 份"
             else -> "章节测验：${pass.results.size} 份没交上"
         }
-        notifyAlert(title, lines.joinToString("\n"), high = pass.pendingHuman > 0)
+        val summary = "题库命中 $bank / LLM 兜底 $byLlm / 留空 $blank"
+        notifyAlert(title, (listOf(summary) + lines).joinToString("\n"), high = pass.pendingHuman > 0)
     }
 
     private fun buildOngoing(text: String): Notification =

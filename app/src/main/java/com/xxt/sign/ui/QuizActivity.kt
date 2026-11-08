@@ -25,6 +25,7 @@ import com.xxt.sign.work.AndroidGlyphSource
 import com.xxt.sign.work.AnswerProvider
 import com.xxt.sign.work.FontBytes
 import com.xxt.sign.work.FontDecoder
+import com.xxt.sign.work.LlmClient
 import com.xxt.sign.work.QuizConfig
 import com.xxt.sign.work.QuizEngine
 import com.xxt.sign.work.QuizResult
@@ -211,9 +212,10 @@ class QuizActivity : AppCompatActivity() {
                     hitThreshold = Settings.quizHitThreshold
                 )
                 val provider = AnswerProvider(
-                    Settings.quizProvider,
-                    Settings.quizEndpoint,
-                    Settings.quizToken
+                    provider = Settings.quizProvider,
+                    endpoint = Settings.quizEndpoint,
+                    token = Settings.quizToken,
+                    llm = buildLlm()
                 )
                 if (!provider.configured) {
                     LogStore.add("[测验] 没配题库，只会跳过或留空（题库/风控 里设置）", false)
@@ -254,6 +256,10 @@ class QuizActivity : AppCompatActivity() {
                         quizItems[pos] = quizItems[pos].copy(state = newState)
                         adapter.update(pos, quizItems[pos])
                     }
+                    LogStore.add(
+                        "[测验] ${item.title} 汇总：题库 ${r.bankHits} / LLM ${r.llmHits} / 留空 ${r.blanks}",
+                        r.submitted
+                    )
                     binding.tvStatus.text = "${item.title}：${r.message}"
                 }
                 LogStore.add("[测验] 本轮结束，共处理 ${targets.size} 份", true)
@@ -289,6 +295,11 @@ class QuizActivity : AppCompatActivity() {
         v.etGap.setText(Settings.quizGapSeconds.toString())
         v.etThreshold.setText(Settings.quizFontThreshold.toString())
         v.swStoreOnly.isChecked = Settings.quizStoreOnly
+        v.swLlm.isChecked = Settings.quizLlmEnabled
+        v.etLlmKey.setText(Settings.quizLlmKey)
+        v.etLlmBaseUrl.setText(Settings.quizLlmBaseUrl)
+        v.etLlmModel.setText(Settings.quizLlmModel)
+        v.etLlmLimit.setText(Settings.quizLlmDailyLimit.toString())
 
         // 题库申请/部署入口：点一下跳系统浏览器
         bindLink(v.linkYanxi, "https://tk.enncy.cn/")
@@ -297,6 +308,7 @@ class QuizActivity : AppCompatActivity() {
         bindLink(v.linkLemonToken, "https://lemtk.xyz/")
         bindLink(v.linkTikuAdapter, "https://github.com/DokiDoki1103/tikuAdapter")
         bindLink(v.linkTikuToken, "https://github.com/DokiDoki1103/tikuAdapter")
+        bindLink(v.linkDeepSeek, "https://platform.deepseek.com/")
 
         MaterialAlertDialogBuilder(this)
             .setTitle("题库与风控")
@@ -310,6 +322,13 @@ class QuizActivity : AppCompatActivity() {
                 Settings.quizEndpoint = endpoint
                 v.etEndpoint.setText(endpoint)
                 Settings.quizToken = v.etToken.text?.toString()?.trim().orEmpty()
+                Settings.quizLlmEnabled = v.swLlm.isChecked
+                Settings.quizLlmKey = v.etLlmKey.text?.toString()?.trim().orEmpty()
+                Settings.quizLlmBaseUrl = v.etLlmBaseUrl.text?.toString()?.trim().orEmpty()
+                    .ifBlank { LlmClient.DEFAULT_BASE_URL }
+                Settings.quizLlmModel = v.etLlmModel.text?.toString()?.trim().orEmpty()
+                    .ifBlank { LlmClient.DEFAULT_MODEL }
+                v.etLlmLimit.text?.toString()?.toIntOrNull()?.let { Settings.quizLlmDailyLimit = it }
                 v.etQMin.text?.toString()?.toIntOrNull()?.let { Settings.quizPerQuestionMin = it }
                 v.etQMax.text?.toString()?.toIntOrNull()?.let { Settings.quizPerQuestionMax = it }
                 v.etSMin.text?.toString()?.toIntOrNull()?.let { Settings.quizSubmitWaitMin = it }
@@ -327,6 +346,18 @@ class QuizActivity : AppCompatActivity() {
     // ------------------------------------------------------------ 工具
 
     private fun toast(msg: String) = Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
+
+    /** LLM 只在用户打开开关且填了 key 时才启用 */
+    private fun buildLlm(): LlmClient? {
+        if (!Settings.quizLlmEnabled) return null
+        val key = Settings.quizLlmKey.trim()
+        if (key.isEmpty()) return null
+        return LlmClient(
+            apiKey = key,
+            baseUrl = Settings.quizLlmBaseUrl,
+            model = Settings.quizLlmModel
+        )
+    }
 
     /** 言溪 / 柠檬的地址是固定的，类型写对就能直接用 */
     private fun defaultEndpointFor(provider: String): String = when (provider.trim().lowercase()) {

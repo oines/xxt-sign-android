@@ -109,6 +109,15 @@ data class QuizResult(
 ) {
     val ok: Boolean get() = submitted && answered > 0
 
+    /** 题库命中 / LLM 兜底 / 留空 的题数，用于日志与通知 */
+    val bankHits: Int
+        get() = questionOutcomes.count { it.answer.isNotBlank() && it.source.startsWith("题库") }
+
+    val llmHits: Int
+        get() = questionOutcomes.count { it.answer.isNotBlank() && it.source.startsWith("LLM") }
+
+    val blanks: Int get() = (total - answered).coerceAtLeast(0)
+
     /** 命中率低于阈值：照样交，但要提示「低置信，建议回看」 */
     fun isLowConfidence(threshold: Float = 0.8f): Boolean = total > 0 && hitRate < threshold
 }
