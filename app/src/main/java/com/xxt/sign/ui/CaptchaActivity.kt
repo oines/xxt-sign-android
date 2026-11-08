@@ -46,6 +46,10 @@ class CaptchaActivity : AppCompatActivity() {
         val type = intent.getStringExtra(EXTRA_TYPE) ?: TYPE_SLIDE
         val tip = intent.getStringExtra(EXTRA_TIP).orEmpty()
         val accountId = intent.getStringExtra(EXTRA_ACCOUNT_ID).orEmpty()
+        // 标题里写清是哪个账号、哪个活动，多账号排队时不会滑错
+        intent.getStringExtra(EXTRA_TITLE)?.takeIf { it.isNotBlank() }?.let {
+            binding.toolbar.title = it
+        }
 
         val web = binding.web
         web.settings.javaScriptEnabled = true
@@ -141,6 +145,7 @@ class CaptchaActivity : AppCompatActivity() {
         private const val EXTRA_CAPTCHA_ID = "captcha_id"
         private const val EXTRA_TYPE = "type"
         private const val EXTRA_TIP = "tip"
+        private const val EXTRA_TITLE = "title"
         private const val EXTRA_ACCOUNT_ID = "account_id"
 
         const val RESULT_VALIDATE = "validate"
@@ -163,11 +168,13 @@ class CaptchaActivity : AppCompatActivity() {
             accountId: String?,
             captchaId: String,
             type: String,
-            tip: String
+            tip: String,
+            title: String? = null
         ): Intent = Intent(ctx, CaptchaActivity::class.java)
             .putExtra(EXTRA_ACCOUNT_ID, accountId.orEmpty())
             .putExtra(EXTRA_CAPTCHA_ID, captchaId)
             .putExtra(EXTRA_TYPE, type)
             .putExtra(EXTRA_TIP, tip)
+            .putExtra(EXTRA_TITLE, title)
     }
 }

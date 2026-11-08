@@ -69,16 +69,23 @@ class SignFragment : Fragment() {
     /** 等扫码的活动 */
     private var pendingScanTarget: SignPlanner.Detected? = null
 
-    /** 等人工过验证码的挂起点 */
-    private var captchaDeferred: CompletableDeferred<String?>? = null
+    /** 等人工过验证码的挂起点。**一次只能有一个**，并且要能分辨结果是不是属于它 */
+    private class CaptchaWait(
+        val prompt: SignFlow.CaptchaPrompt,
+        val deferred: CompletableDeferred<String?>
+    )
+
+    private var pendingCaptcha: CaptchaWait? = null
 
     private val captchaLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) { res ->
         val v = res.data?.getStringExtra(CaptchaActivity.RESULT_VALIDATE)
-        val d = captchaDeferred
-        captchaDeferred = null
-        d?.complete(if (res.resultCode == android.app.Activity.RESULT_OK) v else null)
+        val wait = pendingCaptcha
+        pendingCaptcha = null
+        val ok = res.resultCode == android.app.Activity.RESULT_OK && !v.isNullOrBlank()
+        // 超时后自己已经撤掉的挂起点不会被后排的弹窗结果误伤
+        wait?.deferred?.complete(if (ok) v else null)
     }
 
     private val scanLauncher = registerForActivityResult(ScanContract()) { result ->
@@ -197,7 +204,15 @@ class SignFragment : Fragment() {
 
     override fun onDestroyView() {
         super.onDestroyView()
+        // 页面没了就别让挂起点悬着，得让等待方立刻拿到 null
+        pendingCaptcha?.deferred?.complete(null)
+        pendingCaptcha = null
         _b = null
+    }
+
+    companion object {
+        /** 一次人工滑块最多等多久，超时只把当前账号标成「需人工」，不影响其它账号 */
+        private const val CAPTCHA_WAIT_MS = 180_000L
     }
 
     private fun setSwitch(on: Boolean) {
@@ -774,26 +789,42 @@ class SignFragment : Fragment() {
 
     // ---------------------------------------------------------- 人工兜底
 
+    /**
+     * 弹人工滑块并等结果。
+     *
+     * 调用方（[SignPlanner]）已经把多个账号的验证码排成队列，一次只会进来一个；
+     * 这里再自己守一道：超时/取消就把挂起点撤掉，避免迟到的页面结果发给下一个账号。
+     */
     private suspend fun askHumanCaptcha(p: SignFlow.CaptchaPrompt): String? {
         if (!isAdded) return null
         val d = CompletableDeferred<String?>()
-        captchaDeferred = d
-        showStatus("${p.accountName} 需要人机验证，请滑动拼图")
+        val wait = CaptchaWait(p, d)
+        pendingCaptcha = wait
+        showStatus("${p.title} 需要人机验证，请滑动拼图")
         withContext(Dispatchers.Main) {
             captchaLauncher.launch(
                 CaptchaActivity.intent(
                     requireContext(), p.accountId,
                     CaptchaActivity.CAPTCHA_SIGN, CaptchaActivity.TYPE_SLIDE,
-                    "自动解失败（${p.autoFailedReason}），请手动滑动拼图"
+                    "${p.reason}，请完成拼图后继续签到",
+                    title = p.title
                 )
             )
         }
-        return withTimeoutOrNull(180_000) { d.await() }
+        val v = withTimeoutOrNull(CAPTCHA_WAIT_MS) { d.await() }
+        if (pendingCaptcha === wait) pendingCaptcha = null
+        if (v.isNullOrBlank()) {
+            showStatus("${p.title} 人机验证未完成，这个账号先跳过")
+            LogStore.add("[人机验证] ${p.title} 未完成，标记为需人工", false)
+        }
+        return v
     }
 
     private fun offerWebSignFor(rs: List<SignEngine.Outcome>) {
         val blocked = rs.filter {
-            it.status == SignEngine.SignStatus.NEED_CAPTCHA || it.detail.contains("人脸")
+            it.status == SignEngine.SignStatus.NEED_CAPTCHA ||
+                it.status == SignEngine.SignStatus.NEED_HUMAN ||
+                it.detail.contains("人脸")
         }
         if (blocked.isEmpty()) return
         val acc = AccountStore.get(blocked.first().accountId) ?: return

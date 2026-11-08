@@ -1,15 +1,14 @@
 package com.xxt.sign.sign
 
 import com.xxt.sign.core.Account
-import com.xxt.sign.core.LogStore
 import com.xxt.sign.net.CxApi
-import com.xxt.sign.net.CxCaptcha
-import com.xxt.sign.net.Http
 import com.xxt.sign.net.SignOptions
 
 /**
- * 单活动签到的共享流程：先直接签，被要求验证码时先自动解、失败再转人工。
+ * 单活动签到的共享流程：先直接签，被要求验证码时转人工（人工滑完立刻带 validate 重发）。
+ *
  * [SignRunner] 和 [SignPlanner] 都用它，避免两处各写一遍。
+ * 人工弹窗一律走 [HumanCaptcha]，保证多个账号不会互相覆盖。
  */
 object SignFlow {
 
@@ -18,16 +17,20 @@ object SignFlow {
         val accountName: String,
         val activityLabel: String,
         val aid: String,
-        val autoFailedReason: String
-    )
+        /** 为什么弹窗，给用户看的文案 */
+        val reason: String
+    ) {
+        /** 标题里要写清是哪个账号、哪个活动 */
+        val title: String get() = "$accountName · $activityLabel"
+    }
 
     /**
-     * 签掉一个活动。
+     * 签掉一个活动（单账号，含一次人工验证码机会）。
      *
-     * 服务端要求人机验证时，**直接转人工**（不再做自动解）。
-     * 人工界面用的是 [com.xxt.sign.ui.CaptchaActivity]，与短信登录同一套，已验证可用。
+     * 服务端返回裸 `validate` 时**直接转人工**，不再做自动解；
+     * 人工界面用的是 [com.xxt.sign.ui.CaptchaActivity]。
      *
-     * @param askHuman 弹人机验证，返回 validate；返回 null 表示放弃
+     * @param askHuman 弹人机验证，返回 validate；返回 null 表示放弃/超时
      */
     suspend fun signWithCaptcha(
         acc: Account,
@@ -40,19 +43,27 @@ object SignFlow {
         var r = SignEngine.signOneActivity(acc, api, act, opt)
         if (r.status != SignEngine.SignStatus.NEED_CAPTCHA) return r
 
-        onProgress("${acc.display} 碰到人机验证，请手动过一下")
-        val validate = askHuman(
-            CaptchaPrompt(acc.id, acc.display, act.title, act.aid, "需要人工验证")
-        )
+        onProgress("${acc.display} 需要人机验证，请手动滑一下（${act.title}）")
+        val prompt = CaptchaPrompt(acc.id, acc.display, act.title, act.aid, "服务端要求人机验证")
+        // 串行：同一时刻只会有一个人在滑，validate 只会回到发起它的那个账号
+        val validate = HumanCaptcha.ask(prompt, askHuman)
         if (validate.isNullOrBlank()) {
             return SignEngine.Outcome(
-                acc.id, acc.display, "${act.title} ｜ 人机验证未完成，本次跳过", false,
-                SignEngine.SignStatus.FAILED
+                acc.id, acc.display,
+                "${act.title} ｜ 人机验证未完成，未签上（需人工）", false,
+                SignEngine.SignStatus.NEED_HUMAN
             )
         }
-        onProgress("${acc.display} 验证通过，继续签到…")
+        onProgress("${acc.display} 验证通过，正在重发签到…")
         r = SignEngine.signOneActivity(acc, api, act, opt, validate)
-        return r.copy(detail = r.detail + "（人工通过验证码）")
+        return when {
+            r.ok -> r.copy(detail = r.detail + "（人工过验证码）")
+            r.status == SignEngine.SignStatus.NEED_CAPTCHA -> r.copy(
+                detail = r.detail + "（滑块后仍要求验证）",
+                status = SignEngine.SignStatus.NEED_HUMAN
+            )
+            else -> r
+        }
     }
 
     fun preSignReferer(act: SignEngine.ActiveActivity): String {

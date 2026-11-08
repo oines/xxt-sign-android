@@ -25,7 +25,7 @@ import org.json.JSONObject
  */
 object SignEngine {
 
-    enum class SignStatus { DONE, NEED_CAPTCHA, BLOCKED, FAILED, NO_ACTIVITY }
+    enum class SignStatus { DONE, NEED_CAPTCHA, NEED_HUMAN, BLOCKED, FAILED, NO_ACTIVITY }
 
     data class Outcome(
         val accountId: String,
