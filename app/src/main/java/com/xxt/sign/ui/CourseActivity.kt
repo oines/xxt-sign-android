@@ -35,16 +35,21 @@ class CourseActivity : AppCompatActivity() {
         course = account?.let { StudyCourseStore.load(it.id) }
             ?.courses?.firstOrNull { it.key == key }
 
+        b.toolbar.setNavigationOnClickListener { finish() }
+        onBackPressedDispatcher.addCallback(this, object : androidx.activity.OnBackPressedCallback(true) {
+            override fun handleOnBackPressed() = finish()
+        })
+
         val c = course
         if (c == null) {
-            b.tvCourseName.text = "没找到这门课"
+            b.toolbar.title = "没找到这门课"
             b.btnToggle.isEnabled = false
             return
         }
-        b.tvCourseName.text = c.title
+        b.toolbar.title = c.title
         if (AccountStore.get(Settings.studyAccountId) == null) {
             // 没有账号就别让按钮看起来能点
-            b.tvStateLine.text = "还没登录账号，先去「账号」页加一个"
+            b.tvStateLine.text = "先去「账号」页加一个账号"
             b.btnToggle.isEnabled = false
         } else {
             b.btnToggle.setOnClickListener { CourseRunQueue.toggle(c) }
@@ -70,14 +75,21 @@ class CourseActivity : AppCompatActivity() {
 
         val done = run?.donePoints ?: audit?.doneTaskPoints ?: 0
         val total = run?.totalPoints ?: audit?.taskPoints ?: 0
-        b.tvProgressText.text = if (total > 0) "任务点 $done/$total" else "还没开始看"
-        b.progress.setProgressCompat(if (total > 0) done * 100 / total else 0, false)
 
-        b.tvStateLine.text = when {
+        // 一行就够：在跑就写在跑什么；没跑就只说进度，不再多写一句「没在跑」
+        val runningText = when {
             run != null && run.running -> run.message
-            run != null && run.phase == CourseRunQueue.Phase.STUCK -> "卡住了：${run.message}"
-            else -> "没在跑"
+            run != null && run.phase == CourseRunQueue.Phase.STUCK -> run.message
+            else -> ""
         }
+        val progressText = if (total > 0) "任务点 $done/$total" else ""
+        val line = listOf(runningText, progressText).filter { it.isNotBlank() }.joinToString(" · ")
+        b.tvStateLine.visibility = if (line.isBlank()) android.view.View.GONE else android.view.View.VISIBLE
+        b.tvStateLine.text = line
+
+        b.tvProgressText.visibility = android.view.View.GONE
+        b.progress.visibility = if (total > 0) android.view.View.VISIBLE else android.view.View.GONE
+        b.progress.setProgressCompat(if (total > 0) done * 100 / total else 0, false)
 
         val needs = run?.needsYou.orEmpty().ifBlank { if ((audit?.humanPending ?: 0) > 0) "有要你本人处理的事" else "" }
         b.tvNeedsYou.visibility = if (needs.isBlank()) android.view.View.GONE else android.view.View.VISIBLE

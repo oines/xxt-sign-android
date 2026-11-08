@@ -63,39 +63,26 @@ class ViewDestroyedSmokeTest {
         val activity = controller.get()
         val fm = activity.supportFragmentManager
 
-        // 测验页不再是底栏入口，这里直接挂上去，专门验证它异步回调里的空视图保护
-        val quiz = com.xxt.sign.ui.QuizFragment()
-        fm.beginTransaction().add(R.id.container, quiz, "quiz_probe").commitNow()
+        // 直接挂一个首页：它在协程/回调里会刷新列表与「要你处理」
+        val home = com.xxt.sign.ui.HomeFragment()
+        fm.beginTransaction().add(R.id.container, home, "home_probe").commitNow()
         shadowOf(activity.mainLooper).idle()
-        assertNotNull(quiz.view)
+        assertNotNull(home.view)
 
-        // 模拟「扫描还没结束就切夜间模式」：视图先销毁
+        // 模拟「任务还没跑完就切夜间模式/退出」：视图先销毁
         controller.pause().stop().destroy()
         shadowOf(activity.mainLooper).idle()
-        assertNull("视图应该已经销毁", quiz.view)
+        assertNull("视图应该已经销毁", home.view)
 
-        // 这些就是 finally / 回调里会碰 binding 的方法
-        listOf(
-            "setBusy" to arrayOf<Class<*>>(Boolean::class.javaPrimitiveType!!),
-            "updateEmpty" to emptyArray<Class<*>>(),
-            "updateMode" to emptyArray<Class<*>>()
-        ).forEach { (name, types) ->
-            val m = quiz.javaClass.getDeclaredMethod(name, *types)
+        // 这些就是回调里会碰 binding 的方法，视图没了也必须能安全返回
+        listOf("render", "renderCourses", "renderHuman").forEach { name ->
+            val m = home.javaClass.getDeclaredMethod(name)
             m.isAccessible = true
-            val args = if (types.isEmpty()) emptyArray() else arrayOf<Any>(false)
             try {
-                m.invoke(quiz, *args)
+                m.invoke(home)
             } catch (e: java.lang.reflect.InvocationTargetException) {
                 throw AssertionError("$name 在视图销毁后崩了：${e.targetException}", e.targetException)
             }
-        }
-
-        val uiStatus = quiz.javaClass.getDeclaredMethod("uiStatus", String::class.java)
-        uiStatus.isAccessible = true
-        try {
-            uiStatus.invoke(quiz, "扫描 1/10")
-        } catch (e: java.lang.reflect.InvocationTargetException) {
-            throw AssertionError("uiStatus 在视图销毁后崩了：${e.targetException}", e.targetException)
         }
     }
 }

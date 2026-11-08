@@ -33,6 +33,8 @@ class HomeFragment : Fragment() {
     private var _b: FragmentHomeBinding? = null
     private val b get() = _b!!
 
+    private var refreshing = false
+
     private val adapter = HomeCourseAdapter { course ->
         startActivity(
             Intent(requireContext(), CourseActivity::class.java)
@@ -91,19 +93,25 @@ class HomeFragment : Fragment() {
         val runs = CourseRunQueue.states.value
 
         val active = runs.values.filter { it.running }
-        b.tvState.text = when {
+        val stuck = runs.values.firstOrNull { it.phase == CourseRunQueue.Phase.STUCK }
+        val stateText = when {
             account == null -> "还没登录账号"
             active.isNotEmpty() -> active.first().message
-            runs.values.any { it.phase == CourseRunQueue.Phase.STUCK } -> "有课卡住了，点进去看看"
-            else -> "没在跑"
+            stuck != null -> stuck.message
+            else -> ""
         }
-        b.tvStatus.text = when {
-            account == null -> "去「账号」页加一个账号"
-            active.isNotEmpty() -> "同时只跑一门课，其它的排队等"
-            else -> "点一门课进去按「开始」才会跑"
-        }
+        b.tvState.visibility = if (stateText.isBlank()) View.GONE else View.VISIBLE
+        b.tvState.text = stateText
+        // 不解释「怎么用」：能看见课程列表就够了
+        b.tvStatus.visibility = View.GONE
 
         adapter.submit(courses, audits, runs)
+        // 新装/换账号第一次进来：自己刷一次，不用用户点右上角
+        if (courses.isEmpty() && account != null && !refreshing) {
+            refreshing = true
+            (activity as? com.xxt.sign.MainActivity)?.refreshCoursesSilently()
+        }
+        if (courses.isNotEmpty()) refreshing = false
         b.tvCoursesEmpty.visibility = if (courses.isEmpty()) View.VISIBLE else View.GONE
         b.rvCourses.visibility = if (courses.isEmpty()) View.GONE else View.VISIBLE
     }

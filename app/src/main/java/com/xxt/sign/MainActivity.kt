@@ -94,6 +94,27 @@ class MainActivity : AppCompatActivity() {
         binding.bottomNav.selectedItemId = id
     }
 
+    /** 首次进首页自动刷一次：不弹 toast，不打扰 */
+    fun refreshCoursesSilently() {
+        val account = com.xxt.sign.core.AccountStore.get(com.xxt.sign.core.Settings.studyAccountId) ?: return
+        lifecycleScope.launch {
+            withContext(kotlinx.coroutines.Dispatchers.IO) {
+                runCatching {
+                    val session = com.xxt.sign.sign.SignEngine.sessionFor(account).first
+                        ?: return@runCatching
+                    val api = com.xxt.sign.study.StudyApi(session)
+                    val courses = api.getCourses()
+                    val chapters = mutableMapOf<String, List<com.xxt.sign.study.StudyChapter>>()
+                    courses.forEach { c ->
+                        chapters[c.key] = runCatching { api.getChapters(c) }.getOrDefault(emptyList())
+                    }
+                    com.xxt.sign.study.StudyCourseStore.saveCourses(account.id, courses, chapters)
+                }
+            }
+            // 首页自己会重绘（onResume / 状态流），这里只负责把数据准备好
+        }
+    }
+
     /** 右上角「刷新课程」：拉一遍课程 + 章节，首页立刻能看到 */
     private fun refreshCourses() {
         val account = com.xxt.sign.core.AccountStore.get(com.xxt.sign.core.Settings.studyAccountId)

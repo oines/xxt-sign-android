@@ -33,11 +33,6 @@
             android:exported="false"
             android:foregroundServiceType="dataSync" />
 
-        <activity
-            android:name=".ui.StudyDetailActivity"
-            android:exported="false"
-            android:configChanges="orientation|screenSize|keyboardHidden" />
-
 
         <activity
             android:name=".ui.CaptchaActivity"

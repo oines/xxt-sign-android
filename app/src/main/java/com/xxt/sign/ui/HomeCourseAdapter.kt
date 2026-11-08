@@ -1,6 +1,7 @@
 package com.xxt.sign.ui
 
 import android.view.LayoutInflater
+import android.view.View
 import android.view.ViewGroup
 import androidx.recyclerview.widget.RecyclerView
 import com.xxt.sign.R
@@ -46,31 +47,23 @@ class HomeCourseAdapter(
             val audit = audits[item.courseId]
             b.tvCourseTitle.text = item.title
 
-            // 口径：已完成任务点 / 总任务点（带 jobid 的 attachment），不用 isPassed
-            b.tvCourseNumbers.text = if (audit == null || audit.taskPoints == 0) {
-                "还没体检，点开始会先看看还差什么"
-            } else {
-                val videoLeft = audit.videoPending
-                val quizLeft = audit.quizPending
-                "任务点 ${audit.doneTaskPoints}/${audit.taskPoints}" +
-                    (if (videoLeft > 0) " · 视频 $videoLeft 章待刷" else "") +
-                    (if (quizLeft > 0) " · 测验约 $quizLeft 份待做" else "")
+            // 没数据就什么都不显示，别写「还没体检」这种废话
+            val hasData = audit != null && audit.taskPoints > 0
+            b.tvCourseNumbers.visibility = if (hasData) View.VISIBLE else View.GONE
+            b.progressCourse.visibility = if (hasData) View.VISIBLE else View.GONE
+            if (hasData) {
+                b.tvCourseNumbers.text = "任务点 ${audit!!.doneTaskPoints}/${audit.taskPoints}"
+                b.progressCourse.setProgressCompat(audit.doneTaskPoints * 100 / audit.taskPoints, false)
             }
 
-            val pct = when {
-                audit == null || audit.taskPoints <= 0 -> 0
-                else -> audit.doneTaskPoints * 100 / audit.taskPoints
-            }
-            b.progressCourse.setProgressCompat(pct, false)
-
+            // 只有真的在跑 / 卡住 / 要你动手时才写一行状态，其余留白
             val (text, color) = when {
                 run != null && run.running -> run.message to R.color.primary
-                run != null && run.phase == CourseRunQueue.Phase.STUCK -> "卡住了：${run.message}" to R.color.err
-                audit != null && audit.humanPending > 0 ->
-                    "有 ${audit.humanPending} 处要你本人处理" to R.color.err
-                audit != null && audit.allGreen -> "全绿了" to R.color.ok
-                else -> "没在跑" to R.color.muted
+                run != null && run.phase == CourseRunQueue.Phase.STUCK -> run.message to R.color.err
+                audit != null && audit.humanPending > 0 -> "有要你本人处理的事" to R.color.err
+                else -> "" to R.color.muted
             }
+            b.tvCourseState.visibility = if (text.isBlank()) View.GONE else View.VISIBLE
             b.tvCourseState.text = text
             b.tvCourseState.setTextColor(b.root.context.getColor(color))
         }
