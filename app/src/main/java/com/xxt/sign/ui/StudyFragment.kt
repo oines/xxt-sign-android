@@ -92,6 +92,7 @@ class StudyFragment : Fragment() {
         b.btnMinus.setOnClickListener { setConcurrency(Settings.studyConcurrency - 1) }
         b.btnPlus.setOnClickListener { setConcurrency(Settings.studyConcurrency + 1) }
         b.btnSpeed.setOnClickListener { cycleSpeed() }
+        b.btnQuiz.setOnClickListener { openQuiz() }
         b.btnSelectAll.setOnClickListener { selectAll(true) }
         b.btnClear.setOnClickListener { selectAll(false) }
         b.cardRun.setOnClickListener {
@@ -247,6 +248,34 @@ class StudyFragment : Fragment() {
     private fun formatCacheTime(time: Long): String =
         SimpleDateFormat("MM-dd HH:mm", Locale.getDefault()).format(Date(time))
 
+    // -------------------------------------------------------- 章节测验
+
+    /** 把已勾选的章节带给测验页；扫描/答题都在那边做，这里只负责入口 */
+    private fun openQuiz() {
+        val account = selectedAccount() ?: return toast("请先在「账号」页勾选刷课账号")
+        val refs = mutableListOf<QuizActivity.ChapterRef>()
+        items.forEach { item ->
+            val chapters = item.chapters ?: return@forEach
+            chapters.filter { it.id in item.selectedChapters }.forEach { ch ->
+                refs.add(
+                    QuizActivity.ChapterRef(
+                        courseId = item.course.courseId,
+                        clazzId = item.course.clazzId,
+                        cpi = item.course.cpi,
+                        courseTitle = item.course.title,
+                        chapterId = ch.id,
+                        chapterTitle = ch.title
+                    )
+                )
+            }
+        }
+        if (refs.isEmpty()) {
+            return toast("先在课程里勾选章节，再来扫描章节测验")
+        }
+        startActivity(
+            QuizActivity.intent(requireContext(), account.id, QuizActivity.chaptersToJson(refs))
+        )
+    }
     // ------------------------------------------------------------ 课程
 
     private fun fetchCourses() {

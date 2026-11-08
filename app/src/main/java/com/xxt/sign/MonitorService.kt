@@ -14,7 +14,17 @@ import androidx.core.content.ContextCompat
 import com.xxt.sign.core.AccountStore
 import com.xxt.sign.core.LogStore
 import com.xxt.sign.core.Settings
+import com.xxt.sign.sign.SignEngine
 import com.xxt.sign.sign.SignPlanner
+import com.xxt.sign.study.StudyApi
+import com.xxt.sign.work.AndroidGlyphSource
+import com.xxt.sign.work.AnswerProvider
+import com.xxt.sign.work.FontBytes
+import com.xxt.sign.work.FontDecoder
+import com.xxt.sign.work.QuizAutoRunner
+import com.xxt.sign.work.QuizConfig
+import com.xxt.sign.work.QuizEngine
+import com.xxt.sign.work.WorkApi
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -23,6 +33,8 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import java.io.File
 
 /**
@@ -44,6 +56,10 @@ class MonitorService : Service() {
 
     /** 已经处理/提醒过的活动，避免反复弹 */
     private val handled = LinkedHashMap<String, Long>()
+
+    /** 挂机答题单独跑，别把签到巡检堵住 */
+    private var quizJob: Job? = null
+    private val quizLock = Mutex()
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -83,6 +99,9 @@ class MonitorService : Service() {
     }
 
     private suspend fun round() {
+        // 挂机答题是独立任务：按自己的频率触发，不阻塞签到巡检
+        maybeStartQuizPatrol()
+
         val accounts = AccountStore.accounts.value
         if (accounts.isEmpty()) {
             updateOngoing("等待添加账号")
@@ -197,6 +216,82 @@ class MonitorService : Service() {
             this, 1, i,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
+    }
+
+    // ------------------------------------------------------ 挂机答题
+
+    private fun maybeStartQuizPatrol() {
+        if (!Settings.quizAutoMode) return
+        val acc = AccountStore.get(Settings.studyAccountId) ?: return
+        if (System.currentTimeMillis() - Settings.quizLastPatrolAt < Settings.quizPatrolMinutes * 60_000L) return
+        if (quizJob?.isActive == true) return
+        Settings.quizLastPatrolAt = System.currentTimeMillis()
+        quizJob = scope.launch {
+            quizLock.withLock {
+                runCatching { quizPatrol(acc) }
+                    .onFailure { LogStore.add("[测验] 巡检异常：${it.message}", false) }
+            }
+        }
+    }
+
+    private suspend fun quizPatrol(acc: com.xxt.sign.core.Account) {
+        val (session, err) = SignEngine.sessionFor(acc)
+        if (session == null) {
+            LogStore.add("[测验] 登录失败：$err", false)
+            return
+        }
+        val studyApi = StudyApi(session)
+        val courses = runCatching { studyApi.getCourses() }.getOrDefault(emptyList())
+        if (courses.isEmpty()) return
+
+        val config = QuizConfig(
+            storeOnly = Settings.quizStoreOnly,
+            perQuestionMinSec = Settings.quizPerQuestionMin,
+            perQuestionMaxSec = Settings.quizPerQuestionMax,
+            submitWaitMinSec = Settings.quizSubmitWaitMin,
+            submitWaitMaxSec = Settings.quizSubmitWaitMax,
+            gapSeconds = Settings.quizGapSeconds,
+            fontThreshold = Settings.quizFontThreshold,
+            hitThreshold = Settings.quizHitThreshold
+        )
+        val engine = QuizEngine(
+            api = WorkApi(session),
+            answers = AnswerProvider(Settings.quizProvider, Settings.quizEndpoint, Settings.quizToken),
+            config = config,
+            decoderFactory = { b64 ->
+                FontBytes.decode(b64)?.let { bytes ->
+                    FontDecoder(
+                        source = AndroidGlyphSource(this, bytes),
+                        size = 16,
+                        threshold = Settings.quizFontThreshold
+                    )
+                }
+            },
+            log = { msg, ok -> LogStore.add(msg, ok) }
+        )
+        val runner = QuizAutoRunner(acc.id, studyApi, WorkApi(session), engine)
+        val pass = runner.patrol(courses)
+        if (pass.empty) return
+
+        val lines = pass.results.map { r ->
+            val head = r.courseTitle.ifBlank { "课程" } + " · " + r.title
+            when {
+                r.needsHuman -> "$head：需人工（${r.message}）"
+                r.submitted -> {
+                    val score = if (r.score.isBlank()) "" else "${r.score} 分｜"
+                    val low = if (r.isLowConfidence(Settings.quizHitThreshold)) "（低置信，建议回看）" else ""
+                    "$head：$score 命中 ${(r.hitRate * 100).toInt()}%$low"
+                }
+                else -> "$head：${r.message}"
+            }
+        }
+        val submitted = pass.results.count { it.submitted }
+        val title = when {
+            pass.pendingHuman > 0 -> "章节测验：$submitted 份已交，${pass.pendingHuman} 份需人工"
+            submitted > 0 -> "章节测验：已自动交 $submitted 份"
+            else -> "章节测验：${pass.results.size} 份没交上"
+        }
+        notifyAlert(title, lines.joinToString("\n"), high = pass.pendingHuman > 0)
     }
 
     private fun buildOngoing(text: String): Notification =

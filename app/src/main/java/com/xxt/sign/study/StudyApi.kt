@@ -2,6 +2,7 @@ package com.xxt.sign.study
 
 import com.xxt.sign.net.CxSession
 import com.xxt.sign.net.enc
+import com.xxt.sign.work.WorkJob
 import com.xxt.sign.net.get
 import com.xxt.sign.net.postForm
 import kotlinx.coroutines.delay
@@ -141,6 +142,49 @@ class StudyApi(private val session: CxSession) {
         }
         return ChapterJobs(false, jobs.values.toList())
     }
+
+    /**
+     * 拉一个章节里的测验任务点。
+     * 与视频共用 knowledge/cards 页，只是挑 type == "workid" 的卡片，
+     * 并额外带上 mArg.defaults.ktoken（取题接口要它）。
+     */
+    suspend fun getWorkJobs(course: StudyCourse, chapter: StudyChapter): List<WorkJob> {
+        val out = LinkedHashMap<String, WorkJob>()
+        var ktoken = ""
+        var cpi = course.cpi.ifBlank { "0" }
+        for (num in 0..6) {
+            limiter.acquire()
+            val r = c.get(cardsUrl(course, chapter, num))
+            checkLogin(r.body)
+            if (r.body.contains("章节未开放")) return emptyList()
+            val parsed = StudyParser.parseWorkCards(r.body)
+            if (parsed.ktoken.isNotBlank()) ktoken = parsed.ktoken
+            if (parsed.cpi.isNotBlank()) cpi = parsed.cpi
+            parsed.jobs.forEach { w ->
+                out[w.jobId] = WorkJob(
+                    courseId = course.courseId,
+                    clazzId = course.clazzId,
+                    cpi = cpi,
+                    chapterId = chapter.id,
+                    chapterTitle = chapter.title,
+                    jobId = w.jobId,
+                    workId = w.workId,
+                    enc = w.enc,
+                    ktoken = ktoken,
+                    name = w.name,
+                    courseTitle = course.title
+                )
+            }
+            if (parsed.jobs.isEmpty() && num > 0) break
+        }
+        return out.values.map { if (it.ktoken.isBlank()) it.copy(ktoken = ktoken) else it }
+    }
+
+    private fun cardsUrl(course: StudyCourse, chapter: StudyChapter, num: Int): String =
+        "https://mooc1.chaoxing.com/mooc-ans/knowledge/cards" +
+            "?clazzid=${course.clazzId}&courseid=${course.courseId}" +
+            "&knowledgeid=${chapter.id}&ut=s&cpi=${course.cpi.ifBlank { "0" }}" +
+            "&v=2025-0424-1038-3&mooc2=1&num=$num"
 
     /** 检查一个章节里所有任务点（含视频、章节测验）的完成情况 */
     suspend fun checkChapter(course: StudyCourse, chapter: StudyChapter): ChapterCheck {

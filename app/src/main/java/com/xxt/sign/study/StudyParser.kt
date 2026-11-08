@@ -78,6 +78,65 @@ object StudyParser {
         return out.distinctBy { it.id }
     }
 
+
+    // ------------------------------------------------------ 章节测验任务点
+
+    /** cards 页里 type == "workid" 的任务点 + 取题要用的 ktoken / cpi */
+    data class WorkCards(
+        val jobs: List<RawWorkCard>,
+        val ktoken: String,
+        val cpi: String
+    )
+
+    data class RawWorkCard(
+        /** work-123456 */
+        val jobId: String,
+        /** 123456 */
+        val workId: String,
+        val enc: String,
+        val name: String
+    )
+
+    /**
+     * 解析章节测验任务点。
+     *
+     * 与视频不同：测验卡片的 `type` 是 `workid`，取题还需要 `mArg.defaults.ktoken`
+     * 与 `mArg.cpi`，这两个都在同一份 mArg JSON 里。
+     */
+    fun parseWorkCards(html: String): WorkCards {
+        if (html.contains("章节未开放")) return WorkCards(emptyList(), "", "")
+        val compact = html.replace(" ", "")
+        val raw = Regex("mArg=\\{(.*?)\\};", RegexOption.DOT_MATCHES_ALL)
+            .find(compact)?.groupValues?.getOrNull(1) ?: return WorkCards(emptyList(), "", "")
+        val json = runCatching { JSONObject("{$raw}") }.getOrNull() ?: return WorkCards(emptyList(), "", "")
+
+        val ktoken = json.optJSONObject("defaults")?.optString("ktoken").orEmpty()
+            .takeUnless { it == "null" }.orEmpty()
+        val cpi = json.optString("cpi").takeUnless { it == "null" }.orEmpty()
+        val attachments = json.optJSONArray("attachments") ?: return WorkCards(emptyList(), ktoken, cpi)
+
+        val jobs = LinkedHashMap<String, RawWorkCard>()
+        for (i in 0 until attachments.length()) {
+            val card = attachments.optJSONObject(i) ?: continue
+            if (!card.optString("type").equals("workid", ignoreCase = true)) continue
+
+            val jobIdRaw = card.optString("jobid").takeUnless { it == "null" }.orEmpty()
+            var workId = card.optString("workid").takeUnless { it == "null" }.orEmpty()
+            if (workId.isBlank() && jobIdRaw.startsWith("work-")) workId = jobIdRaw.removePrefix("work-")
+            val jobId = jobIdRaw.ifBlank { if (workId.isNotBlank()) "work-$workId" else "" }
+            if (workId.isBlank() || jobId.isBlank()) continue
+
+            val enc = card.optString("enc").takeUnless { it == "null" }.orEmpty()
+            val name = card.optJSONObject("property")?.optString("name").orEmpty()
+                .ifBlank { card.optString("name") }
+                .takeUnless { it == "null" }.orEmpty()
+                .ifBlank { "章节测验" }
+
+            jobs[jobId] = RawWorkCard(jobId = jobId, workId = workId, enc = enc, name = name)
+        }
+        return WorkCards(jobs.values.toList(), ktoken, cpi)
+    }
+
     /**
      * 解析 knowledge/cards 页面里的 mArg JSON，只取 type=video 且未通过的任务点。
      * 页面出现「章节未开放」时返回 notOpen=true。
