@@ -42,7 +42,13 @@ class CourseActivity : AppCompatActivity() {
             return
         }
         b.tvCourseName.text = c.title
-        b.btnToggle.setOnClickListener { CourseRunQueue.toggle(c) }
+        if (AccountStore.get(Settings.studyAccountId) == null) {
+            // 没有账号就别让按钮看起来能点
+            b.tvStateLine.text = "还没登录账号，先去「账号」页加一个"
+            b.btnToggle.isEnabled = false
+        } else {
+            b.btnToggle.setOnClickListener { CourseRunQueue.toggle(c) }
+        }
 
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
