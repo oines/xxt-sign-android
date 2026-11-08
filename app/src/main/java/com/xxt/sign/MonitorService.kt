@@ -23,6 +23,11 @@ import com.xxt.sign.work.AnswerProvider
 import com.xxt.sign.work.FontBytes
 import com.xxt.sign.work.FontDecoder
 import com.xxt.sign.work.LlmClient
+import com.xxt.sign.study.CourseAuditStore
+import com.xxt.sign.study.CourseAuditor
+import com.xxt.sign.study.CourseSweepCursor
+import com.xxt.sign.study.StudyManager
+import com.xxt.sign.study.StudyPlan
 import com.xxt.sign.work.QuizAutoRunner
 import com.xxt.sign.work.QuizConfig
 import com.xxt.sign.work.QuizEngine
@@ -103,6 +108,8 @@ class MonitorService : Service() {
     private suspend fun round() {
         // 挂机答题是独立任务：按自己的频率触发，不阻塞签到巡检
         maybeStartQuizPatrol()
+        // 「全绿」流水线：先体检这门课还差什么，视频缺口排给刷课，测验缺口留给巡检
+        maybeSweepCourse()
 
         val accounts = AccountStore.accounts.value
         if (accounts.isEmpty()) {
@@ -246,6 +253,57 @@ class MonitorService : Service() {
                     .onFailure { LogStore.add("[测验] 巡检异常：${it.message}", false) }
             }
         }
+    }
+
+    /** 每轮体检一门课（轮转），把视频缺口排进刷课流水线 */
+    private suspend fun maybeSweepCourse() {
+        if (!Settings.quizAutoMode) return
+        if (quizLock.isLocked) return
+        if (StudyManager.isRunning()) return
+        if (System.currentTimeMillis() - Settings.quizLastPatrolAt < Settings.quizPatrolMinutes * 60_000L) return
+        val acc = AccountStore.get(Settings.studyAccountId) ?: return
+
+        val (session, err) = SignEngine.sessionFor(acc)
+        if (session == null) {
+            LogStore.add("[体检] 登录失败：$err", false)
+            return
+        }
+        val studyApi = StudyApi(session)
+        val courses = runCatching { studyApi.getCourses() }.getOrDefault(emptyList())
+        if (courses.isEmpty()) return
+
+        val index = CourseSweepCursor.next(acc.id, courses.size)
+        val course = courses[index]
+        val chapters = runCatching { studyApi.getChapters(course) }.getOrDefault(emptyList())
+        if (chapters.isEmpty()) return
+
+        val result = CourseAuditor(studyApi).audit(course, chapters) { updateOngoing("体检：$it") }
+
+        // 写回缓存，首页据此显示"还差几个任务点"
+        val merged = CourseAuditStore.load(acc.id).filterNot { it.courseId == course.courseId } + result.audit
+        CourseAuditStore.save(acc.id, merged)
+
+        val a = result.audit
+        updateOngoing("体检 ${index + 1}/${courses.size} · ${a.headline()}")
+
+        if (result.videoChapters.isEmpty()) {
+            if (a.onlyHumanLeft || a.allGreen) notifyAlert(a.headline(), "自动能做的都做完了，剩下要你本人处理", high = false)
+            return
+        }
+        if (Settings.quizStoreOnly) {
+            LogStore.add("[体检] ${a.headline()}；「只暂存」开着，先不动视频", true)
+            return
+        }
+        // 视频缺口 → 排给刷课流水线（刷完下一轮体检会重新数，测验由巡检接着做）
+        StudyManager.plan = StudyPlan(
+            accountId = acc.id,
+            courses = listOf(course),
+            chapterSelection = mapOf(course.key to result.videoChapters.map { it.id }.toSet()),
+            concurrency = Settings.studyConcurrency,
+            speed = Settings.studySpeed
+        )
+        LogStore.add("[体检] ${a.headline()}；开始刷 ${result.videoChapters.size} 章视频", true)
+        StudyManager.start()
     }
 
     private suspend fun quizPatrol(acc: com.xxt.sign.core.Account) {

@@ -157,8 +157,11 @@ class StudyCourseAdapter(
                 check.videoComplete -> "视频完成" to R.color.ok
                 else -> "视频未完成" to R.color.muted
             }
+            // 视频做完了但还有别的任务点（一般是章节测验）：这一章可以单独勾「只做测验」
+            val quizOnly = check != null && !check.notOpen && check.videoComplete && !check.allComplete
             val suffix = buildString {
                 append(" · ").append(label)
+                if (quizOnly) append(" · 只做测验")
                 if (chapter.needUnlock) append(" · 需解锁")
                 if (chapter.jobCount > 0) append(" · 任务点 ").append(chapter.jobCount)
             }
@@ -167,7 +170,8 @@ class StudyCourseAdapter(
                 text = "$index. ${chapter.title}$suffix"
                 textSize = 12f
                 isChecked = checked
-                isEnabled = !chapter.finished && (check == null || check.videoPending || failed)
+                // 已完成的任务点不许再勾（避免重复跑）；视频完成但测验没做的，允许勾「只做测验」
+                isEnabled = !chapter.finished && (check == null || check.videoPending || failed || quizOnly)
                 setPadding(dp(4), dp(2), 0, dp(2))
                 setTextColor(ctx.getColor(color))
                 setOnCheckedChangeListener { _, isChecked ->

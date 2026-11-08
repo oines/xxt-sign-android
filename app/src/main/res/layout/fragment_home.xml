@@ -50,6 +50,32 @@
                 android:textSize="13sp"
                 android:text="本周：还没开始" />
 
+            <TextView
+                android:id="@+id/tvGreen"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="6dp"
+                android:textSize="15sp"
+                android:textStyle="bold"
+                android:text="还没体检：点一次下面按钮就知道这门课还差几个任务点" />
+
+            <LinearLayout
+                android:id="@+id/llCourses"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="4dp"
+                android:orientation="vertical" />
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btnAudit"
+                style="@style/Widget.Material3.Button.TonalButton"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:insetTop="0dp"
+                android:insetBottom="0dp"
+                android:text="体检：这门课还差什么" />
+
             <com.google.android.material.button.MaterialButton
                 android:id="@+id/btnStop"
                 style="@style/Widget.Material3.Button.OutlinedButton"

@@ -54,8 +54,8 @@ import java.util.Locale
 /**
  * 章节测验页（底部导航「测验」）。
  *
- * 章节来源是刷课页勾选的章节（[Settings.studySelectedChapters] + 本地课程缓存），
- * 所以这里不需要额外传参；扫描只查这些章节，避免一次性打几百个请求。
+ * 扫描范围 = 该账号所有课程的全部章节（[StudyCourseStore] 缓存，没有就现场拉）。
+ * 扫描是「发现」，勾选是「执行范围」：勾选只决定点「开始」后做哪些，不影响能不能扫到。
  */
 class QuizFragment : Fragment() {
 
@@ -143,6 +143,12 @@ class QuizFragment : Fragment() {
     /**
      * 从刷课页的本地缓存 + 勾选里恢复章节；用户改过勾选后回到这里会自动刷新。
      */
+    /**
+     * 扫描范围 = 该账号所有课程的全部章节。
+     *
+     * 勾选是「点开始后做哪些」的执行范围，不是发现范围：
+     * 扫描只负责把全部测验找出来给用户看，不该被刷课页的勾选卡住。
+     */
     private fun refreshChapters() {
         if (_b == null) return
         val account = AccountStore.get(Settings.studyAccountId)
@@ -153,11 +159,9 @@ class QuizFragment : Fragment() {
             return
         }
         val snapshot = StudyCourseStore.load(account.id)
-        val selected = Settings.studySelectedChapters
         val refs = mutableListOf<ChapterRef>()
         snapshot?.courses?.forEach { course ->
-            val list = snapshot.chapters[course.key].orEmpty()
-            list.filter { "${course.key}#${it.id}" in selected }.forEach { ch ->
+            snapshot.chapters[course.key].orEmpty().forEach { ch ->
                 refs.add(
                     ChapterRef(
                         courseId = course.courseId,
@@ -172,12 +176,35 @@ class QuizFragment : Fragment() {
         }
         chapters.clear()
         chapters.addAll(refs)
-        b.tvEmpty.text = if (refs.isEmpty()) {
-            "还没有可扫描的章节\n先到「刷课」页勾选章节，再回来点扫描"
-        } else {
-            "已选 ${refs.size} 个章节\n点下面按钮扫描章节测验"
+        b.tvEmpty.text = when {
+            refs.isEmpty() -> "还没有课程缓存\n点「扫描」会自动拉一遍全部课程的章节"
+            else -> "已缓存 ${snapshot?.courses?.size ?: 0} 门课 / ${refs.size} 个章节\n点「扫描」看看有哪些章节测验"
         }
         updateEmpty()
+    }
+
+    /** 课程缓存为空时现场拉一遍（扫描不依赖刷课页，必须自己保证有数据） */
+    private suspend fun ensureAllChapters(studyApi: StudyApi, accountId: String): List<ChapterRef> {
+        if (chapters.isNotEmpty()) return chapters.toList()
+
+        uiStatus("正在读取课程列表…")
+        val courses = withContext(Dispatchers.IO) {
+            runCatching { studyApi.getCourses() }.getOrDefault(emptyList())
+        }
+        if (courses.isEmpty()) return emptyList()
+
+        val loaded = mutableMapOf<String, List<StudyChapter>>()
+        courses.forEachIndexed { i, course ->
+            uiStatus("正在读取章节 ${i + 1}/${courses.size}：${course.title}")
+            val chs = withContext(Dispatchers.IO) {
+                runCatching { studyApi.getChapters(course) }.getOrDefault(emptyList())
+            }
+            loaded[course.key] = chs
+        }
+        // 顺手写回缓存，下次进页面不用重拉
+        runCatching { StudyCourseStore.saveCourses(accountId, courses, loaded) }
+        refreshChapters()
+        return chapters.toList()
     }
 
     /** 重启后恢复上次扫描结果与状态 */
@@ -229,10 +256,12 @@ class QuizFragment : Fragment() {
     }
 
     private fun updateEmpty() {
+        if (_b == null) return
         b.emptyBox.visibility = if (quizItems.isEmpty()) View.VISIBLE else View.GONE
     }
 
     private fun updateMode() {
+        if (_b == null) return
         val submit = if (Settings.quizStoreOnly) "只暂存" else "自动交卷"
         val auto = if (Settings.quizAutoMode) "挂机开启（每 ${Settings.quizPatrolMinutes} 分钟巡检）" else "挂机关闭，仅手动"
         b.tvMode.text = "当前：$auto · $submit"
@@ -243,7 +272,6 @@ class QuizFragment : Fragment() {
     private fun scan() {
         if (running) return toast("正在跑，先等一下")
         refreshChapters()
-        if (chapters.isEmpty()) return toast("先到「刷课」页勾选章节")
         val account = AccountStore.get(Settings.studyAccountId) ?: return toast("先在账号页选刷课账号")
 
         running = true
@@ -256,15 +284,25 @@ class QuizFragment : Fragment() {
             try {
                 val (session, err) = withContext(Dispatchers.IO) { SignEngine.sessionFor(account) }
                 if (session == null) {
-                    b.tvStatus.text = "登录失败：$err"
+                    uiStatus("登录失败：$err")
                     return@launch
                 }
                 val studyApi = StudyApi(session)
                 val workApi = WorkApi(session)
                 val found = mutableListOf<QuizItem>()
 
-                chapters.forEachIndexed { index, ref ->
-                    b.tvStatus.text = "扫描 ${index + 1}/${chapters.size}：${ref.courseTitle} · ${ref.chapterTitle}"
+                // 扫描范围：全部章节（与勾选无关）
+                val scope = ensureAllChapters(studyApi, account.id)
+                if (scope.isEmpty()) {
+                    uiStatus("没读到课程或章节，检查一下网络")
+                    return@launch
+                }
+                // 一遍扫完可能几十章，边扫边把结果铺出来，不用等全部结束
+                quizItems.clear()
+                adapter.submit(emptyList())
+
+                scope.forEachIndexed { index, ref ->
+                    uiStatus("扫描 ${index + 1}/${scope.size}：${ref.courseTitle} · ${ref.chapterTitle}")
                     val jobs = withContext(Dispatchers.IO) {
                         runCatching { studyApi.getWorkJobs(ref.toCourse(), ref.toChapter()) }
                             .getOrDefault(emptyList())
@@ -283,28 +321,35 @@ class QuizFragment : Fragment() {
                                 job = job,
                                 courseTitle = ref.courseTitle,
                                 questionCount = parsed?.questionCount ?: 0,
-                                state = if (submitted) "已交卷" else "未开始",
+                                state = if (submitted) "已做过" else "未开始",
                                 checked = !submitted,
                                 submitted = submitted
                             )
                         )
                     }
+                    // 增量：扫一章铺一章
+                    if (jobs.isNotEmpty()) {
+                        found.sortWith(compareBy({ it.courseTitle }, { it.job.chapterTitle }))
+                        quizItems.clear()
+                        quizItems.addAll(found)
+                        adapter.submit(quizItems.toList())
+                        persistItems()
+                        updateEmpty()
+                    }
                 }
 
-                quizItems.clear()
-                quizItems.addAll(found)
-                adapter.submit(quizItems.toList())
-                persistItems()
-                updateEmpty()
-                b.tvStatus.text = if (found.isEmpty()) {
-                    "这些章节里没有章节测验"
-                } else {
-                    "发现 ${found.size} 个测验，勾选后点「开始」"
-                }
+                uiStatus(
+                    if (found.isEmpty()) {
+                        "全部 ${scope.size} 个章节里没有章节测验"
+                    } else {
+                        val todo = found.count { !it.submitted }
+                        "全部 ${scope.size} 个章节里发现 ${found.size} 个测验（$todo 个还没做），勾选后点「开始」"
+                    }
+                )
             } finally {
                 running = false
                 setBusy(false)
-                b.progress.visibility = View.GONE
+                if (_b != null) b.progress.visibility = View.GONE
             }
         }
     }
@@ -312,6 +357,8 @@ class QuizFragment : Fragment() {
     // ------------------------------------------------------------ 答题
 
     private fun setBusy(busy: Boolean) {
+        // 视图可能已经销毁（例如扫描中切夜间模式导致重建），这里必须能安全返回
+        if (_b == null) return
         b.btnScan.isEnabled = !busy
         b.btnAnswer.isEnabled = !busy
         b.btnEmptyScan.isEnabled = !busy
@@ -359,7 +406,7 @@ class QuizFragment : Fragment() {
             try {
                 val (session, err) = withContext(Dispatchers.IO) { SignEngine.sessionFor(account) }
                 if (session == null) {
-                    b.tvStatus.text = "登录失败：$err"
+                    uiStatus("登录失败：$err")
                     return@launch
                 }
 
@@ -409,7 +456,7 @@ class QuizFragment : Fragment() {
                         quizItems[pos] = quizItems[pos].copy(running = true, error = "")
                         adapter.update(pos, quizItems[pos])
                     }
-                    b.tvStatus.text = "答题 ${index + 1}/${targets.size}：${item.title}"
+                    uiStatus("答题 ${index + 1}/${targets.size}：${item.title}")
 
                     val r = runCatching { engine.run(item.job) }
                         .getOrElse {
@@ -444,7 +491,7 @@ class QuizFragment : Fragment() {
                     if (r.needsHuman) roundHuman++
                     QuizRuntime.update("正在答题：${item.title}")
                     updateRound(bank = null)
-                    b.tvStatus.text = "${item.title}：${r.message}"
+                    uiStatus("${item.title}：${r.message}")
                     LogStore.add(
                         "[测验] ${item.title} 汇总：题库 ${r.bankHits} / LLM ${r.llmHits} / 留空 ${r.blanks}" +
                             if (r.fontReference.isNotBlank()) {
@@ -459,12 +506,13 @@ class QuizFragment : Fragment() {
             } finally {
                 running = false
                 setBusy(false)
-                b.progress.visibility = View.GONE
+                if (_b != null) b.progress.visibility = View.GONE
             }
         }
     }
 
     private fun updateRound(bank: Int?) {
+        if (_b == null) return
         b.tvStats.text = buildString {
             append("本轮：已交 ").append(roundDone).append('/').append(roundTotal)
             if (roundHuman > 0) append(" · 需人工 ").append(roundHuman)
@@ -578,7 +626,15 @@ class QuizFragment : Fragment() {
 
     private fun now(): String = SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date())
 
+    /** 状态文案：视图已经销毁就丢掉，别在异步回调里炸 NPE */
+    private fun uiStatus(text: String) {
+        if (_b == null) return
+        b.tvStatus.text = text
+    }
+
+    /** 视图没了就丢弃回调：扫描中切主题/夜间模式会重建 Activity，绑定已经为空 */
     private fun runOnUi(block: () -> Unit) {
+        if (_b == null || !isAdded) return
         val act = activity ?: return
         act.runOnUiThread { if (isAdded) runCatching(block) }
     }

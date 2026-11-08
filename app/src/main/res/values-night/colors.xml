@@ -10,4 +10,9 @@
     <color name="study_blue">#7FB3F0</color>
     <color name="ok">#7BC67E</color>
     <color name="err">#F28B82</color>
+
+    <color name="btn_bg_enabled">#2A8A73</color>
+    <color name="btn_bg_disabled">#3C4442</color>
+    <color name="btn_text_enabled">#FFFFFF</color>
+    <color name="btn_text_disabled">#C3C9C6</color>
 </resources>

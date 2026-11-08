@@ -11,4 +11,10 @@
     <color name="on_primary_dark">#FFFFFF</color>
     <color name="surface_variant_text">#5F6663</color>
     <color name="study_blue">#1565C0</color>
+
+    <!-- 按钮常态 / 禁用态：禁用也要读得出来，不能只降透明度 -->
+    <color name="btn_bg_enabled">#1E6F5C</color>
+    <color name="btn_bg_disabled">#CBD3D0</color>
+    <color name="btn_text_enabled">#FFFFFF</color>
+    <color name="btn_text_disabled">#3F4744</color>
 </resources>

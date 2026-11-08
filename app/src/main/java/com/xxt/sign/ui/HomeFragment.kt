@@ -15,6 +15,9 @@ import com.xxt.sign.R
 import com.xxt.sign.core.AccountStore
 import com.xxt.sign.core.Settings
 import com.xxt.sign.databinding.FragmentHomeBinding
+import com.xxt.sign.study.CourseAuditStore
+import com.xxt.sign.study.CourseAuditor
+import com.xxt.sign.study.StudyApi
 import com.xxt.sign.study.StudyManager
 import com.xxt.sign.work.QuizHandledStore
 import com.xxt.sign.work.QuizRuntime
@@ -31,6 +34,7 @@ import kotlinx.coroutines.launch
 class HomeFragment : Fragment() {
 
     private var _b: FragmentHomeBinding? = null
+    private var auditing = false
     private val b get() = _b!!
 
     override fun onCreateView(
@@ -74,6 +78,7 @@ class HomeFragment : Fragment() {
             QuizRuntime.stop()
             render()
         }
+        b.btnAudit.setOnClickListener { runAudit() }
         b.btnQuiz.setOnClickListener { (activity as? MainActivity)?.openTab(R.id.nav_quiz) }
         b.btnLog.setOnClickListener { (activity as? MainActivity)?.openLogs() }
 
@@ -134,7 +139,84 @@ class HomeFragment : Fragment() {
             "本周：交了 $papers 份测验，答上 $answered 题"
         }
 
+        renderGreen()
         renderHuman(auto)
+    }
+
+    /** 首页第一行答案：全绿了几门 / 一共几门 / 还差多少任务点 */
+    private fun renderGreen() {
+        if (_b == null) return
+        val audits = CourseAuditStore.loadCurrent()
+        if (audits.isEmpty()) {
+            b.tvGreen.text = "还没体检：点下面「体检」就知道还差几个任务点"
+            b.llCourses.removeAllViews()
+            return
+        }
+        val (green, total, remaining) = CourseAuditStore.summary(audits)
+        b.tvGreen.text = when {
+            green == total -> "$total 门课全部全绿 ✅"
+            else -> "$total 门课里 $green 门已全绿 · 还差 $remaining 个任务点"
+        }
+
+        b.llCourses.removeAllViews()
+        // 缺口最多的排前面，最多列 3 门
+        audits.sortedByDescending { it.remaining }.take(3).forEach { a ->
+            val tv = TextView(requireContext()).apply {
+                text = a.headline()
+                textSize = 13f
+                setPadding(0, 6, 0, 6)
+                setTextColor(requireContext().getColor(if (a.allGreen) R.color.ok else R.color.primary))
+            }
+            b.llCourses.addView(tv)
+        }
+    }
+
+    /** 手动体检：跑一遍当前账号的所有课程，写回缓存 */
+    private fun runAudit() {
+        val account = AccountStore.get(Settings.studyAccountId) ?: run {
+            b.tvGreen.text = "先在「账号」页选一个账号"
+            return
+        }
+        if (auditing) return
+        auditing = true
+        b.btnAudit.isEnabled = false
+        b.tvGreen.text = "正在体检，别关页面…"
+
+        viewLifecycleOwner.lifecycleScope.launch {
+            try {
+                val (session, err) = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                    com.xxt.sign.sign.SignEngine.sessionFor(account)
+                }
+                if (session == null) {
+                    b.tvGreen.text = "登录失败：$err"
+                    return@launch
+                }
+                val api = StudyApi(session)
+                val courses = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                    runCatching { api.getCourses() }.getOrDefault(emptyList())
+                }
+                if (courses.isEmpty()) {
+                    b.tvGreen.text = "没读到课程，检查网络"
+                    return@launch
+                }
+                val auditor = CourseAuditor(api)
+                val out = mutableListOf<com.xxt.sign.study.CourseAudit>()
+                courses.forEachIndexed { i, course ->
+                    b.tvGreen.text = "正在体检 ${i + 1}/${courses.size}：${course.title}"
+                    val chapters = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                        runCatching { api.getChapters(course) }.getOrDefault(emptyList())
+                    }
+                    if (chapters.isEmpty()) return@forEachIndexed
+                    out.add(auditor.audit(course, chapters).audit)
+                    CourseAuditStore.save(account.id, out.toList())
+                    renderGreen()
+                }
+                renderGreen()
+            } finally {
+                auditing = false
+                if (_b != null) b.btnAudit.isEnabled = true
+            }
+        }
     }
 
     /** 「需要你本人」最多 3 条：人脸/滑块、位置签到要到教室 */
@@ -146,6 +228,17 @@ class HomeFragment : Fragment() {
         val pending = if (accountId.isBlank()) emptySet() else QuizHandledStore.humanKeys(accountId)
         if (pending.isNotEmpty()) {
             items.add("有 ${pending.size} 份测验要你本人过一下" to "可能需要人脸或滑块，点开测验页处理")
+        }
+        val audits = CourseAuditStore.loadCurrent()
+        val needMe = audits.filter { it.humanPending > 0 }
+        if (needMe.isNotEmpty()) {
+            val head = needMe.first()
+            val gap = head.gaps.firstOrNull { it.kind == com.xxt.sign.study.CourseAudit.Kind.HUMAN }
+            items.add(
+                "${needMe.size} 门课里有它做不了的任务点" to
+                    (gap?.let { "${head.courseTitle} · ${it.chapterTitle}：${it.detail}" }
+                        ?: "作业/考试/上传这类得你自己交")
+            )
         }
         if (Settings.latitude.isBlank() || Settings.longitude.isBlank()) {
             items.add("位置签到要你在教室里" to "到教室后打开 App，会自动用当前定位")

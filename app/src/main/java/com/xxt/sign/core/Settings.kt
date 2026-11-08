@@ -116,6 +116,10 @@ object Settings {
         get() = sp.getBoolean("quizAutoMode", true)
         set(v) = sp.edit().putBoolean("quizAutoMode", v).apply()
 
+    /** 通用整型存取（巡检游标之类的小状态） */
+    fun rawInt(key: String, def: Int): Int = sp.getInt(key, def)
+    fun putRawInt(key: String, v: Int) = sp.edit().putInt(key, v).apply()
+
     /** 是否已经向用户解释过"挂机会替你交卷" */
     var quizAfkWarned: Boolean
         get() = sp.getBoolean("quizAfkWarned", false)

@@ -520,7 +520,7 @@ class SignFragment : Fragment() {
                 showStatus("出错：${e.message}")
             } finally {
                 running = false
-                b.progress.visibility = View.GONE
+                if (_b != null) b.progress.visibility = View.GONE
             }
             // 必须等 running 归位之后再问，否则点点“继续签”会被当成“上一个任务还在跑”
             if (done) continueIfMore(d)
@@ -970,7 +970,7 @@ class SignFragment : Fragment() {
                 LogStore.add("[诊断] 异常：${e.message}", false)
             } finally {
                 running = false
-                b.progress.visibility = View.GONE
+                if (_b != null) b.progress.visibility = View.GONE
             }
         }
     }
