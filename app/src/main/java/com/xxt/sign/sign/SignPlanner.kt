@@ -151,6 +151,9 @@ object SignPlanner {
     ): List<SignEngine.Outcome> {
         val targets = accounts.filter { it.id in target.accountIds }
         val results = mutableListOf<SignEngine.Outcome>()
+        // 扫码 / 拿到 enc 的时刻只算一次：动态二维码的 enc 只有 ewmRefreshTime（实测 5/10/20 秒），
+        // 多账号顺序签时后面的账号早就过期了，得让 CxApi 知道真实时间。
+        val encAt = System.currentTimeMillis()
 
         fun emit(o: SignEngine.Outcome) {
             results.add(o)
@@ -187,7 +190,7 @@ object SignPlanner {
                 photoBytes = photoBytes,
                 // 扫码入口是 15，课堂入口是 0
                 appType = if (qr != null) CxApi.APP_TYPE_SCAN else CxApi.APP_TYPE_COURSE,
-                encAt = if (qr != null) System.currentTimeMillis() else 0L
+                encAt = if (qr != null || qrEnc != null) encAt else 0L
             )
 
             val o = runCatching {
