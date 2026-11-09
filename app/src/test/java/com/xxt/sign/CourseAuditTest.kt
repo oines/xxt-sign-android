@@ -5,6 +5,7 @@ import com.xxt.sign.study.ChapterRow
 import com.xxt.sign.study.CardTask
 import com.xxt.sign.study.CourseAuditCalculator
 import com.xxt.sign.study.summarizeChapter
+import com.xxt.sign.study.withPlatformTotals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -186,5 +187,33 @@ class CourseAuditTest {
         assertTrue(line.contains("视频 2"))
         assertTrue(line.contains("测验 1"))
         assertFalse("章节数不该混进任务点口径", line.contains("章"))
+    }
+
+    // ------------------------------------------------ 分母口径（392）
+
+    @Test
+    fun platformTotalsWinOverSelfCount() {
+        // 图标直接判完成的章只有 knowledgeJobCount，自数会偏小（真机 304 vs 平台 392）
+        val self = CourseAuditCalculator.audit(
+            "c1", "大学体育与健康",
+            listOf(input("2.1 什么是健康?", video("v1", true), quiz("work-1")))
+        )
+        assertEquals(2, self.taskPoints)
+
+        val merged = self.withPlatformTotals(done = 11, total = 392)
+        assertEquals(392, merged.taskPoints)
+        assertEquals(11, merged.doneTaskPoints)
+        assertEquals(381, merged.remaining)
+        assertFalse(merged.allGreen)
+    }
+
+    @Test
+    fun missingPlatformTotalsKeepsSelfCount() {
+        val self = CourseAuditCalculator.audit(
+            "c1", "体育", listOf(input("1.1 导论", video("v1", true)))
+        )
+        val merged = self.withPlatformTotals(done = -1, total = -1)
+        assertEquals(self.taskPoints, merged.taskPoints)
+        assertEquals(self.doneTaskPoints, merged.doneTaskPoints)
     }
 }

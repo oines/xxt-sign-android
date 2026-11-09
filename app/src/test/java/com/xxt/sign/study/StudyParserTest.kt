@@ -209,4 +209,35 @@ class StudyParserTest {
         assertTrue("有 icon_yiwanc 的是已完成", chapters[0].finished)
         assertFalse("icon_yiwanctwo 是未完成", chapters[1].finished)
     }
+
+    /** 「无视频任务」必须能区分：本来就做完 vs 解析没匹配上 */
+    @Test
+    fun parseCards_reportsVideoTotalsAndMalformed() {
+        val json = """
+            {"attachments":[
+              {"jobid":"v1","job":true,"type":"video","objectId":"o1","isPassed":true,
+               "property":{"name":"已完成的视频"}},
+              {"jobid":"v2","job":true,"type":"video","objectId":"o2","isPassed":false,
+               "property":{"name":"待刷视频"}},
+              {"jobid":"v3","job":true,"type":"video","isPassed":false,
+               "property":{"name":"缺 objectId 的视频"}}
+            ]}
+        """.trimIndent()
+        val r = StudyParser.parseCards("<script>mArg=$json;</script>")
+        assertEquals(1, r.jobs.size)
+        assertEquals(3, r.videoTotal)
+        assertEquals(1, r.videoDone)
+        assertEquals(1, r.malformed)
+    }
+
+    /** 平台自报的「已完成任务点 X/Y」才是 392 这种口径 */
+    @Test
+    fun parseTaskPointTotals_readsPlatformNumbers() {
+        val html0 = """<span>已完成任务点:</span> <span class="orange">11</span> / <span>392</span>"""
+        assertEquals(11 to 392, StudyParser.parseTaskPointTotals(html0))
+        val html1 = """<div class="bj"><span>已完成任务点: 11/392</span></div>"""
+        assertEquals(11 to 392, StudyParser.parseTaskPointTotals(html1))
+        assertEquals(null, StudyParser.parseTaskPointTotals("<html>没有这行</html>"))
+        assertEquals(null, StudyParser.parseTaskPointTotals("已完成任务点: 0/0"))
+    }
 }

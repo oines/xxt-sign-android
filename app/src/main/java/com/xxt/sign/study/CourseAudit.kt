@@ -71,6 +71,16 @@ data class CourseAudit(
     }
 }
 
+/**
+ * 用平台自报的「已完成任务点 X/Y」作为总数口径。
+ *
+ * 为什么要它：图标直接判完成的章节只有章节目录里的 `knowledgeJobCount` 可用，
+ * 真机上自数出来 304、平台是 392 —— 分母不对，用户看到的进度永远对不上。
+ * 平台解析不到（total <= 0）时保持自数。
+ */
+fun CourseAudit.withPlatformTotals(done: Int, total: Int): CourseAudit =
+    if (total <= 0) this else copy(taskPoints = total, doneTaskPoints = done.coerceIn(0, total))
+
 /** 课程页逐章列表的一行：数据全部来自体检，不额外请求 */
 data class ChapterRow(
     val title: String,

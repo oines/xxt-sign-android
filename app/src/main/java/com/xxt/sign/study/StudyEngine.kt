@@ -69,7 +69,16 @@ class StudyEngine(
         )
         if (targets.isEmpty()) return StudySummary(0, 0)
 
-        val semaphore = Semaphore(plan.concurrency.coerceIn(1, 8))
+        // 风控硬约束：视频必须一路一路播。
+        // 原来的 Semaphore(plan.concurrency) 是每次 run 新建的局部量，设置填 3 就是三路齐播；
+        // 现在章节级也是 1，视频真的开播还会再过 [VideoGate]（进程级互斥，重试也算）。
+        val semaphore = Semaphore(1)
+        if (plan.concurrency > 1) {
+            LogStore.add(
+                "[刷课] 并发设置是 ${plan.concurrency}，但视频播放固定为 1 路（风控），其余排队",
+                true
+            )
+        }
         coroutineScope {
             targets.map { (course, chapter) ->
                 async(Dispatchers.IO) {
@@ -149,9 +158,21 @@ class StudyEngine(
         val jobs = api.getVideoJobs(course, chapter)
         if (jobs.notOpen) return ChapterOutcome.NOT_OPEN
         if (jobs.jobs.isEmpty()) {
-            LogStore.add("[刷课] ${course.title} · ${chapter.title} 无视频任务", true)
+            // 两种情况必须分开打，否则真机上根本看不出是「做完了」还是「解析没找到」
+            val reason = when {
+                jobs.videoTotal == 0 -> "解析没找到视频（这一章没有 video 附件）"
+                jobs.videoDone >= jobs.videoTotal -> "已完成的跳过（${jobs.videoTotal} 个视频全部 isPassed）"
+                else -> "解析没找到视频（共 ${jobs.videoTotal} 个 video 附件，已完成 ${jobs.videoDone}，" +
+                    "其余解析不出 jobid/objectId，疑似缺字段）"
+            }
+            LogStore.add("[刷课] ${course.title} · ${chapter.title}：$reason", jobs.videoDone >= jobs.videoTotal)
             return ChapterOutcome.DONE
         }
+        LogStore.add(
+            "[刷课] ${course.title} · ${chapter.title}：待刷 ${jobs.jobs.size} 个视频" +
+                "（共 ${jobs.videoTotal}，已完成 ${jobs.videoDone}）",
+            true
+        )
 
         var allOk = true
         videoLoop@ for ((index, job) in jobs.jobs.withIndex()) {
@@ -172,15 +193,18 @@ class StudyEngine(
             onTask(base.copy(status = StudyTaskStatus.RUNNING, message = "准备中"))
 
             var lastProgress = 0
-            val result = runVideo(course, job) { pct, msg ->
-                lastProgress = pct
-                onTask(
-                    base.copy(
-                        status = StudyTaskStatus.RUNNING,
-                        progress = pct,
-                        message = msg
+            // 全局闸门：同一时刻只允许一路视频在播（含重试）
+            val result = VideoGate.run {
+                runVideo(course, job) { pct, msg ->
+                    lastProgress = pct
+                    onTask(
+                        base.copy(
+                            status = StudyTaskStatus.RUNNING,
+                            progress = pct,
+                            message = msg
+                        )
                     )
-                )
+                }
             }
 
             // 弹题统计要进任务卡片和日志：视频中途弹题 2 道，答上 1 道
@@ -274,6 +298,7 @@ class StudyEngine(
         var lastPlayTimeSeen = playTime
         var stallRounds = 0
         var quizDeadline = 0L
+        var resumedAfterStall = false
 
         fun popResult() = PopQuizResult(
             total = popTotal,
@@ -389,7 +414,12 @@ class StudyEngine(
             }
 
             // ---- 弹题轮询 ----
-            if (tickNow - lastPollAt >= POP_POLL_INTERVAL_MS) {
+            // 客户端进度已经到底时不数「不动」轮数：那是在等服务端确认，不是卡住也不是弹题
+            if (playTime >= duration) {
+                stallRounds = 0
+                lastPlayTimeSeen = playTime
+            }
+            if (tickNow - lastPollAt >= POP_POLL_INTERVAL_MS && playTime < duration) {
                 lastPollAt = tickNow
                 if (playTime > lastPlayTimeSeen) {
                     lastPlayTimeSeen = playTime
@@ -408,17 +438,45 @@ class StudyEngine(
                     val outcome = PopQuizPolicy.decide(
                         bridge, emptyList(), emptyList(), timedOut = false, stalledRounds = stallRounds
                     )
-                    (outcome.decision as? PopQuizDecision.GiveUp)?.let { giveUp ->
-                        popGaveUp = giveUp.reason
-                        LogStore.add("[刷课] ${job.name}：${giveUp.reason}", false)
-                        onProgress(lastPercent.coerceAtLeast(0), "卡在弹题，标为需要人工")
-                        return VideoRunResult(
-                            ok = false,
-                            progress = lastPercent.coerceAtLeast(0),
-                            message = giveUp.reason,
-                            needsHuman = true,
-                            popQuiz = popResult()
-                        )
+                    // 进度不动 ≠ 弹题：先续播一次，还不动就当普通失败退出去重试
+                    (outcome.decision as? PopQuizDecision.Stalled)?.let { stalled ->
+                        if (!resumedAfterStall) {
+                            resumedAfterStall = true
+                            LogStore.add("[刷课] ${job.name}：${stalled.reason}，续播一次", false)
+                            val fresh = try {
+                                api.videoStatus(job.objectId)
+                            } catch (e: CancellationException) {
+                                throw e
+                            } catch (e: Exception) {
+                                LogStore.add("[刷课] ${job.name}：取播放状态失败 ${e.message}", false)
+                                null
+                            }
+                            if (fresh != null) {
+                                status = fresh
+                                duration = maxOf(duration, fresh.duration)
+                            }
+                            // 等于“点一下播放”：补一次进度上报
+                            val resumed = logWithRtFallback(
+                                course, job, status, playTime, duration, 3, chosenRt, rtCandidates
+                            )
+                            if (resumed.passed) {
+                                onProgress(100, "完成")
+                                return VideoRunResult(
+                                    ok = true, progress = 100, message = "完成", popQuiz = popResult()
+                                )
+                            }
+                            stallRounds = 0
+                            lastPlayTimeSeen = playTime
+                        } else {
+                            LogStore.add("[刷课] ${job.name}：${stalled.reason}，续播也没动，退出重试", false)
+                            return VideoRunResult(
+                                ok = false,
+                                progress = lastPercent.coerceAtLeast(0),
+                                message = "播放卡住，重试",
+                                needsHuman = false,
+                                popQuiz = popResult()
+                            )
+                        }
                     }
                 } else {
                     if (quizDeadline == 0L) quizDeadline = tickNow + POP_QUIZ_TIMEOUT_MS

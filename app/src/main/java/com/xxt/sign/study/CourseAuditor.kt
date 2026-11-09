@@ -35,6 +35,10 @@ class CourseAuditor(
     suspend fun audit(
         course: StudyCourse,
         chapters: List<StudyChapter>,
+        /** 平台自报的已完成任务点，-1 = 没解析到 */
+        platformDone: Int = -1,
+        /** 平台自报的任务点总数，-1 = 没解析到 */
+        platformTotal: Int = -1,
         onProgress: (String) -> Unit = {}
     ): Result {
         val scope = if (chapters.size > MAX_CHAPTERS) chapters.take(MAX_CHAPTERS) else chapters
@@ -97,7 +101,19 @@ class CourseAuditor(
             inputs.add(ChapterAuditInput(ch.title, check))
         }
 
-        val audit = CourseAuditCalculator.audit(course.courseId, course.title, inputs)
+        val counted = CourseAuditCalculator.audit(course.courseId, course.title, inputs)
+        // 分母以平台自报为准：自数会因为「图标直接判完成的章只有 knowledgeJobCount」而偏小
+        // （真机上自数 304、平台 392）。对不上时把两个数都打出来，方便查口径。
+        val audit = counted.withPlatformTotals(platformDone, platformTotal)
+        if (platformTotal > 0 && platformTotal != counted.taskPoints) {
+            log(
+                "[体检] ${course.title} 任务点口径：平台 $platformDone/$platformTotal，" +
+                    "自数 ${counted.doneTaskPoints}/${counted.taskPoints}（差 ${platformTotal - counted.taskPoints}）",
+                false
+            )
+        } else if (platformTotal <= 0) {
+            log("[体检] ${course.title}：没解析到平台的「已完成任务点 X/Y」，分母用自数 ${counted.taskPoints}", false)
+        }
         log("[体检] ${audit.headline()}", audit.allGreen)
         // 真机取证口子：类型分布一眼能看出「需本人」到底是哪类
         log(
@@ -109,7 +125,6 @@ class CourseAuditor(
         )
         val humanTypes = audit.gaps.filter { it.kind == CourseAudit.Kind.HUMAN }
         humanTypes.take(5).forEach { log("[体检] 需本人明细 · ${it.chapterTitle}：${it.detail}", false) }
-        // 用户要的「按类型分组」：一眼能看出「需本人」到底是哪类任务点
         log(
             "[体检] 类型分布（逐卡扫描 $scanned 章）：" +
                 "video $vD/$vT · document $dD/$dT · workid(workA) $wD/$wT" +

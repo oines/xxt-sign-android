@@ -53,13 +53,36 @@ class PopQuizTest {
     }
 
     @Test
-    fun noBridgeAndStalledProgressMeansStuckOnQuiz() {
+    fun stalledWithoutQuestionsIsNotQuizButPlaybackStall() {
+        // 真机反馈：连续 4 次「卡在弹题」、第 5 次同一个视频直接完成 —— 其实是播放停滞
         val out = PopQuizPolicy.decide(
             PopQuizBridge.NONE, emptyList(), emptyList(),
             timedOut = false, stalledRounds = PopQuizPolicy.STALL_ROUNDS
         )
         val d = out.decision
-        assertTrue("没接口 + 进度不动 = 卡在弹题", d is PopQuizDecision.GiveUp)
+        assertTrue("没读到题就不能叫弹题", d is PopQuizDecision.Stalled)
+        val reason = (d as PopQuizDecision.Stalled).reason
+        assertTrue(reason.contains("播放"))
+        assertFalse(reason.contains("弹题"))
+        assertFalse("卡住不是需要人工", out.result.needsHuman)
+    }
+
+    @Test
+    fun stalledWithBridgeConfiguredStillNotCalledQuiz() {
+        val out = PopQuizPolicy.decide(
+            configured, emptyList(), emptyList(),
+            timedOut = false, stalledRounds = PopQuizPolicy.STALL_ROUNDS
+        )
+        val d = out.decision
+        assertTrue(d is PopQuizDecision.Stalled)
+        assertFalse((d as PopQuizDecision.Stalled).reason.contains("弹题"))
+    }
+
+    @Test
+    fun readingRealQuestionsIsTheOnlyWayToSayQuiz() {
+        val out = PopQuizPolicy.decide(configured, listOf(q), listOf(""), timedOut = true, stalledRounds = 9)
+        val d = out.decision
+        assertTrue("真读到题才能说弹题", d is PopQuizDecision.GiveUp)
         assertTrue((d as PopQuizDecision.GiveUp).reason.contains("弹题"))
     }
 

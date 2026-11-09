@@ -95,22 +95,31 @@ sealed interface PopQuizDecision {
     /** 继续播 */
     data object Continue : PopQuizDecision
 
-    /** 答不上 / 没配置 / 超时：这视频八成停在这了，记录下来交给上层 */
+    /**
+     * 进度不动，但**没有真的读到题**：这当播放卡住（缓冲/暂停/等服务端确认）处理，
+     * 不是弹题。上层先续播一次，再不行就当普通失败重试。
+     */
+    data class Stalled(val reason: String) : PopQuizDecision
+
+    /** 真的读到了题但答不上 / 超时：这视频确实停在题上了 */
     data class GiveUp(val reason: String, val needsHuman: Boolean) : PopQuizDecision
 }
 
 /**
  * 弹题处置策略：纯逻辑，方便单测。
  *
- * 规则（来自需求）：
+ * 规则（真机反馈后修订的）：
  *  - 解出来就答，全答上 → 继续播
  *  - 答不上 → 60 秒超时，跳过并在日志里标「这道弹题没答上，视频可能停在这里」
- *  - **绝不能让整门课卡死**：超时后不再死等，把任务标成需要人工，继续下一个任务点
- *  - 没有接口（没抓包 / 没配置）时，靠「进度不前进」判断卡在弹题，同样标需要人工
+ *  - **只有真读到题（[questions] 非空）才允许叫「弹题」。**
+ *    只是进度不动 → [PopQuizDecision.Stalled]「播放卡住」，让上层续播/重试，不能标需要人工。
+ *    之前真机上 4 次「卡在弹题」、第 5 次同一个视频直接完成，就是进度不动被当成弹题了
+ *    （其实那段时间客户端进度已经到底，正在等服务端确认，而且旧代码在等确认阶段还在数「不动」轮数）。
+ *  - 绝不能让整门课卡死：真弹题超时就标需要人工，继续下一个任务点
  */
 object PopQuizPolicy {
 
-    /** 同一个时间点连续多久没动就认为卡在弹题 */
+    /** 同一个时间点连续多久没动就认为播放卡住 */
     const val STALL_ROUNDS = 3
 
     data class Outcome(val decision: PopQuizDecision, val result: PopQuizResult)
@@ -130,15 +139,14 @@ object PopQuizPolicy {
         stalledRounds: Int
     ): Outcome {
         if (questions.isEmpty()) {
-            // 没有题：检查是不是卡住了（没接口时这是我们唯一的信号）
+            // 没有题：只是进度不动，**不能当弹题**。让上层续播一次，再不行当普通失败重试。
             return if (stalledRounds >= STALL_ROUNDS) {
-                Outcome(
-                    PopQuizDecision.GiveUp(
-                        "播放进度不动了，疑似卡在弹题（没配弹题接口，无法自动作答）",
-                        needsHuman = true
-                    ),
-                    PopQuizResult(needsHuman = true)
-                )
+                val why = if (bridge.configured) {
+                    "播放进度 ${stalledRounds * 10} 秒没动（接口没返回待答题，按播放卡住处理）"
+                } else {
+                    "播放进度 ${stalledRounds * 10} 秒没动（播放器缓冲/暂停）"
+                }
+                Outcome(PopQuizDecision.Stalled(why), PopQuizResult())
             } else {
                 Outcome(PopQuizDecision.Continue, PopQuizResult())
             }

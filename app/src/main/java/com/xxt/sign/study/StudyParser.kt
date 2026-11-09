@@ -159,8 +159,12 @@ object StudyParser {
     }
 
     /**
-     * 解析 knowledge/cards 页面里的 mArg JSON，只取 type=video 且未通过的任务点。
-     * 页面出现「章节未开放」时返回 notOpen=true。
+     * 解析 knowledge/cards 页面里的 mArg JSON。
+     *
+     * 除了「待刷视频」，还把这一页**出现过多少 video 任务点 / 其中多少个已完成**带回去：
+     * 真机上「无视频任务」有两种完全不同的情况，日志里必须能区分：
+     *  - 这章本来就没视频 / 视频都已完成（正常跳过）
+     *  - 有 video 附件但解析不出 jobid/objectId（解析没匹配上，是 bug）
      */
     fun parseCards(html: String): ChapterJobs {
         if (html.contains("章节未开放")) return ChapterJobs(true, emptyList())
@@ -175,16 +179,26 @@ object StudyParser {
         val attachments = json.optJSONArray("attachments") ?: return ChapterJobs(false, emptyList())
 
         val jobs = LinkedHashMap<String, VideoJob>()
+        val allVideo = LinkedHashSet<String>()
+        val doneVideo = LinkedHashSet<String>()
+        var malformed = 0
         for (i in 0 until attachments.length()) {
             val card = attachments.optJSONObject(i) ?: continue
-            if (isPassed(card)) continue
             if (!card.optString("type").equals("video", ignoreCase = true)) continue
 
-            val property = card.optJSONObject("property") ?: JSONObject()
-            val jobId = card.optString("jobid")
-            val objectId = card.optString("objectId")
-            if (jobId.isBlank() || objectId.isBlank()) continue
+            val jobId = card.optString("jobid").takeUnless { it == "null" }.orEmpty()
+            val objectId = card.optString("objectId").takeUnless { it == "null" }.orEmpty()
+            if (jobId.isNotBlank()) allVideo.add(jobId)
+            if (isPassed(card)) {
+                if (jobId.isNotBlank()) doneVideo.add(jobId)
+                continue
+            }
+            if (jobId.isBlank() || objectId.isBlank()) {
+                malformed++
+                continue
+            }
 
+            val property = card.optJSONObject("property") ?: JSONObject()
             // 参考实现只保留 & 前面的部分，后面的参数会干扰进度上报
             val otherInfo = card.optString("otherInfo").substringBefore("&")
 
@@ -200,7 +214,31 @@ object StudyParser {
                 faceCaptureEnc = card.optString("videoFaceCaptureEnc").takeUnless { it == "null" }.orEmpty()
             )
         }
-        return ChapterJobs(false, jobs.values.toList())
+        return ChapterJobs(
+            notOpen = false,
+            jobs = jobs.values.toList(),
+            allVideoKeys = allVideo,
+            doneVideoKeys = doneVideo,
+            malformed = malformed
+        )
+    }
+
+    /**
+     * 章节目录页上的「已完成任务点: X/Y」——平台自己的口径，数字最可信。
+     * 真机上就是这个数（392）跟 App 自数的对不上，所以要拿它做分母。
+     */
+    fun parseTaskPointTotals(html: String): Pair<Int, Int>? {
+        val idx = html.indexOf("已完成任务点")
+        if (idx < 0) return null
+        val tail = html.substring(idx, minOf(html.length, idx + 400))
+        // 形如：已完成任务点: <span>11</span>/<span>392</span> 或 已完成任务点: 11/392
+        val spans = Regex(">\\s*(\\d{1,5})\\s*<").findAll(tail).map { it.groupValues[1].toInt() }.take(2).toList()
+        if (spans.size == 2) return spans[0] to spans[1]
+        val plain = Regex("(\\d{1,5})\\s*/\\s*(\\d{1,5})").find(tail) ?: return null
+        val done = plain.groupValues[1].toInt()
+        val total = plain.groupValues[2].toInt()
+        if (total <= 0 || done > total) return null
+        return done to total
     }
 
     /** attachment 带 jobid 且 job==true 才算任务点（全账号 897 个就是这么数出来的） */

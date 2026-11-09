@@ -110,20 +110,33 @@ class StudyApi(private val session: CxSession) {
 
     // ------------------------------------------------------------ 章节
 
-    suspend fun getChapters(course: StudyCourse): List<StudyChapter> {
+    suspend fun getChapters(course: StudyCourse): List<StudyChapter> = getChapterPage(course).chapters
+
+    /** 章节目录 + 平台自报的「已完成任务点 X/Y」（同一份页面，不额外请求） */
+    data class ChapterPage(val chapters: List<StudyChapter>, val donePoints: Int, val totalPoints: Int)
+
+    suspend fun getChapterPage(course: StudyCourse): ChapterPage {
         limiter.acquire()
         val url = "https://mooc2-ans.chaoxing.com/mooc2-ans/mycourse/studentcourse" +
             "?courseid=${course.courseId}&clazzid=${course.clazzId}" +
             "&cpi=${enc(course.cpi.ifBlank { "0" })}&ut=s"
         val r = c.get(url)
         checkLogin(r.body)
-        return StudyParser.parseChapters(r.body)
+        val totals = StudyParser.parseTaskPointTotals(r.body)
+        return ChapterPage(
+            chapters = StudyParser.parseChapters(r.body),
+            donePoints = totals?.first ?: -1,
+            totalPoints = totals?.second ?: -1
+        )
     }
 
     // -------------------------------------------------------- 视频任务
 
     suspend fun getVideoJobs(course: StudyCourse, chapter: StudyChapter): ChapterJobs {
         val jobs = LinkedHashMap<String, VideoJob>()
+        val allVideo = LinkedHashSet<String>()
+        val doneVideo = LinkedHashSet<String>()
+        var malformed = 0
         for (num in 0..6) {
             limiter.acquire()
             val r = c.get(
@@ -136,6 +149,9 @@ class StudyApi(private val session: CxSession) {
             val parsed = StudyParser.parseCards(r.body)
             if (parsed.notOpen) return ChapterJobs(true, emptyList())
             parsed.jobs.forEach { jobs[it.jobId] = it }
+            allVideo += parsed.allVideoKeys
+            doneVideo += parsed.doneVideoKeys
+            if (parsed.malformed > malformed) malformed = parsed.malformed
         }
 
         // 没有任务点时访问一次空页面，和网页端行为一致（不计视频任务）
@@ -157,7 +173,13 @@ class StudyApi(private val session: CxSession) {
                 )
             }
         }
-        return ChapterJobs(false, jobs.values.toList())
+        return ChapterJobs(
+            notOpen = false,
+            jobs = jobs.values.toList(),
+            allVideoKeys = allVideo,
+            doneVideoKeys = doneVideo,
+            malformed = malformed
+        )
     }
 
     /**

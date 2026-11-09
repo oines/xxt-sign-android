@@ -167,14 +167,18 @@ object CourseRunQueue {
             return
         }
         val api = StudyApi(session)
-        val chapters = runCatching { api.getChapters(course) }.getOrDefault(emptyList())
+        val page = runCatching { api.getChapterPage(course) }.getOrNull()
+        val chapters = page?.chapters.orEmpty()
         if (chapters.isEmpty()) {
             update(key) { it.copy(phase = Phase.STUCK, message = "没读到章节，稍后再点开始") }
             return
         }
+        // 平台自报的任务点总数（真机上是 392）；体检分母优先用它
+        val tpDone = page?.donePoints ?: -1
+        val tpTotal = page?.totalPoints ?: -1
 
         // 1) 体检：知道这门课还差几个任务点（同时拿到待做文档、视频章、测验章）
-        val audit = CourseAuditor(api).audit(course, chapters) { msg ->
+        val audit = CourseAuditor(api).audit(course, chapters, tpDone, tpTotal) { msg ->
             update(key) { s -> s.copy(message = msg) }
         }
         update(key) {
@@ -227,7 +231,10 @@ object CourseRunQueue {
         }
 
         // 5) 收尾：再体检一次，把「还差什么」刷新到最新（用户验收就看这个数）
-        val after = runCatching { CourseAuditor(api).audit(course, chapters) {} }.getOrNull()
+        val after = runCatching {
+            val fresh = api.getChapterPage(course)
+            CourseAuditor(api).audit(course, fresh.chapters, fresh.donePoints, fresh.totalPoints) {}
+        }.getOrNull()
         val latest = after?.audit ?: audit.audit
         val merged = CourseAuditStore.load(accountId).filterNot { it.courseId == course.courseId } + latest
         CourseAuditStore.save(accountId, merged)
@@ -333,7 +340,12 @@ object CourseRunQueue {
             val st = StudyManager.state.value
             // StudyState.current 是「课程 · 章名」，拆出章名给逐章列表高亮用
             val chapterTitle = st.current.removePrefix("${course.title} · ").takeIf { it != st.current }.orEmpty()
-            val head = "正在刷视频 ${st.doneChapters}/${st.totalChapters}"
+            // 章节数没算出来之前不显示 0/0（真机上先闪「0/0」再变「14/90」，看着像坏了）
+            val head = if (st.totalChapters <= 0) {
+                "正在刷视频 · 正在数章节"
+            } else {
+                "正在刷视频 ${st.doneChapters}/${st.totalChapters}"
+            }
             val now = System.currentTimeMillis()
             update(key) {
                 it.copy(

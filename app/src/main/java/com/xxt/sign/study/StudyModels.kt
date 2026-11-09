@@ -63,7 +63,19 @@ data class VideoStatus(val dtoken: String, val duration: Int)
 
 data class VideoLogResult(val passed: Boolean, val code: Int, val body: String)
 
-data class ChapterJobs(val notOpen: Boolean, val jobs: List<VideoJob>)
+data class ChapterJobs(
+    val notOpen: Boolean,
+    val jobs: List<VideoJob>,
+    /** 这一章里出现过的所有 video 任务点 key（含已完成的，用于区分「做完了」和「解析没找到」） */
+    val allVideoKeys: Set<String> = emptySet(),
+    /** 其中 isPassed=true 的 */
+    val doneVideoKeys: Set<String> = emptySet(),
+    /** 有 jobid 但缺 objectId/otherInfo，解析出来也播不了的个数 */
+    val malformed: Int = 0
+) {
+    val videoTotal: Int get() = allVideoKeys.size
+    val videoDone: Int get() = doneVideoKeys.size
+}
 
 /**
  * 一个任务点（视频/文档/测验等）的完成情况，用于“检查任务点”。

@@ -290,10 +290,13 @@ class MonitorService : Service() {
 
         val index = CourseSweepCursor.next(acc.id, courses.size)
         val course = courses[index]
-        val chapters = runCatching { studyApi.getChapters(course) }.getOrDefault(emptyList())
+        val page = runCatching { studyApi.getChapterPage(course) }.getOrNull()
+        val chapters = page?.chapters.orEmpty()
         if (chapters.isEmpty()) return
 
-        val result = CourseAuditor(studyApi).audit(course, chapters) { updateOngoing("体检：$it") }
+        val result = CourseAuditor(studyApi).audit(
+            course, chapters, page?.donePoints ?: -1, page?.totalPoints ?: -1
+        ) { updateOngoing("体检：$it") }
 
         // 写回缓存，首页据此显示"还差几个任务点"
         val merged = CourseAuditStore.load(acc.id).filterNot { it.courseId == course.courseId } + result.audit
