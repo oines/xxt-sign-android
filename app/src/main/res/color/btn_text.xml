@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 按钮文字：禁用态不再靠 alpha 糊掉，直接给一个能看清的颜色 -->
+<selector xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:state_enabled="false" android:color="@color/btn_text_disabled" />
+    <item android:color="@color/btn_text_enabled" />
+</selector>

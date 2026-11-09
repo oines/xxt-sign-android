@@ -33,10 +33,6 @@
             android:exported="false"
             android:foregroundServiceType="dataSync" />
 
-        <activity
-            android:name=".ui.StudyDetailActivity"
-            android:exported="false"
-            android:configChanges="orientation|screenSize|keyboardHidden" />
 
         <activity
             android:name=".ui.CaptchaActivity"
@@ -58,6 +54,11 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+        <activity
+            android:name=".ui.CourseActivity"
+            android:exported="false"
+            android:label="课程" />
+
     </application>
 
 </manifest>

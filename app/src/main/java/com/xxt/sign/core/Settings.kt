@@ -5,6 +5,12 @@ import android.content.SharedPreferences
 
 /** 全局可调参数：位置签到坐标、拍照签到图片、自动巡检开关 */
 object Settings {
+    const val QUIZ_NONE = "off"
+    const val QUIZ_AUTO = "auto"
+    const val QUIZ_TIKU_ADAPTER = "tikuadapter"
+    const val QUIZ_YANXI = "yanxi"
+    const val QUIZ_LEMON = "lemon"
+
     private lateinit var sp: SharedPreferences
 
     fun init(c: Context) {
@@ -99,6 +105,144 @@ object Settings {
     var studySpeed: Float
         get() = sp.getFloat("studySpeed", 1.0f).coerceIn(1.0f, 2.0f)
         set(v) = sp.edit().putFloat("studySpeed", v.coerceIn(1.0f, 2.0f)).apply()
+
+    // -------------------------------------------------------- 章节测验
+
+    /**
+     * 挂机模式总开关：默认开启。
+     * 打开后前台服务会自动巡检课程、自动答题、自动交卷；关掉就只保留手动入口。
+     */
+    var quizAutoMode: Boolean
+        get() = sp.getBoolean("quizAutoMode", true)
+        set(v) = sp.edit().putBoolean("quizAutoMode", v).apply()
+
+    /** 通用整型存取（巡检游标之类的小状态） */
+    fun rawInt(key: String, def: Int): Int = sp.getInt(key, def)
+    fun putRawInt(key: String, v: Int) = sp.edit().putInt(key, v).apply()
+
+    /** 是否已经向用户解释过"挂机会替你交卷" */
+    var quizAfkWarned: Boolean
+        get() = sp.getBoolean("quizAfkWarned", false)
+        set(v) = sp.edit().putBoolean("quizAfkWarned", v).apply()
+
+    /** 文档任务点要不要自动完成（一次 GET 就完成，默认做） */
+    var studyDocuments: Boolean
+        get() = sp.getBoolean("studyDocuments", true)
+        set(v) = sp.edit().putBoolean("studyDocuments", v).apply()
+
+    /** 正在跑的课程（course.key） */
+    var runningCourses: Set<String>
+        get() = sp.getStringSet("runningCourses", emptySet()) ?: emptySet()
+        set(v) = sp.edit().putStringSet("runningCourses", v).apply()
+
+    /** 弹题取题接口模板（真机抓包后填；占位符见 ConfiguredPopQuizBridge） */
+    var popQuizFetchUrl: String
+        get() = sp.getString("popQuizFetchUrl", "") ?: ""
+        set(v) = sp.edit().putString("popQuizFetchUrl", v).apply()
+
+    /** 弹题提交接口模板 */
+    var popQuizSubmitUrl: String
+        get() = sp.getString("popQuizSubmitUrl", "") ?: ""
+        set(v) = sp.edit().putString("popQuizSubmitUrl", v).apply()
+
+    /** 最近一次成功的定位，位置签到用它兜底 */
+    var lastGoodLat: String
+        get() = sp.getString("lastGoodLat", "") ?: ""
+        set(v) = sp.edit().putString("lastGoodLat", v).apply()
+
+    var lastGoodLon: String
+        get() = sp.getString("lastGoodLon", "") ?: ""
+        set(v) = sp.edit().putString("lastGoodLon", v).apply()
+
+    /** 题库来源：auto（内置免费源）/ tikuadapter / yanxi / lemon / off */
+    var quizProvider: String
+        get() = sp.getString("quizProvider", QUIZ_AUTO) ?: QUIZ_AUTO
+        set(v) = sp.edit().putString("quizProvider", v).apply()
+
+    /** 题库端点。tikuAdapter 填根地址，言溪/柠檬填域名 */
+    var quizEndpoint: String
+        get() = sp.getString("quizEndpoint", "") ?: ""
+        set(v) = sp.edit().putString("quizEndpoint", v).apply()
+
+    /** 题库 token（言溪/柠檬需要；tikuAdapter 一般不用） */
+    var quizToken: String
+        get() = sp.getString("quizToken", "") ?: ""
+        set(v) = sp.edit().putString("quizToken", v).apply()
+
+    /**
+     * 只暂存（pyFlag=1）。**默认关闭**：挂机要的是「自己交完」，所以默认正式提交。
+     * 想先看效果的人可以手动打开。
+     */
+    var quizStoreOnly: Boolean
+        get() = sp.getBoolean("quizStoreOnly", false)
+        set(v) = sp.edit().putBoolean("quizStoreOnly", v).apply()
+
+    /** 命中率阈值：低于它仍然交，但日志/通知会标「低置信，建议回看」 */
+    var quizHitThreshold: Float
+        get() = sp.getFloat("quizHitRate", 0.8f).coerceIn(0f, 1f)
+        set(v) = sp.edit().putFloat("quizHitRate", v.coerceIn(0f, 1f)).apply()
+
+    /** 自动巡检测验的间隔（分钟） */
+    var quizPatrolMinutes: Int
+        get() = sp.getInt("quizPatrolMin", 10).coerceIn(1, 240)
+        set(v) = sp.edit().putInt("quizPatrolMin", v.coerceIn(1, 240)).apply()
+
+    /** 上次自动巡检的时间戳，用来限速 */
+    var quizLastPatrolAt: Long
+        get() = sp.getLong("quizLastPatrol", 0L)
+        set(v) = sp.edit().putLong("quizLastPatrol", v).apply()
+
+    /** 单题停留时间下限（秒），拟人节奏 */
+    var quizPerQuestionMin: Int
+        get() = sp.getInt("quizPerQMin", 8).coerceIn(1, 120)
+        set(v) = sp.edit().putInt("quizPerQMin", v.coerceIn(1, 120)).apply()
+
+    /** 单题停留时间上限（秒） */
+    var quizPerQuestionMax: Int
+        get() = sp.getInt("quizPerQMax", 20).coerceIn(1, 300)
+        set(v) = sp.edit().putInt("quizPerQMax", v.coerceIn(1, 300)).apply()
+
+    /** 答完到提交的等待下限（秒） */
+    var quizSubmitWaitMin: Int
+        get() = sp.getInt("quizSubmitMin", 30).coerceIn(0, 600)
+        set(v) = sp.edit().putInt("quizSubmitMin", v.coerceIn(0, 600)).apply()
+
+    /** 答完到提交的等待上限（秒） */
+    var quizSubmitWaitMax: Int
+        get() = sp.getInt("quizSubmitMax", 60).coerceIn(0, 900)
+        set(v) = sp.edit().putInt("quizSubmitMax", v.coerceIn(0, 900)).apply()
+
+    /** 两份卷子之间的最小间隔（秒），默认 90 */
+    var quizGapSeconds: Int
+        get() = sp.getInt("quizGap", 90).coerceIn(30, 1800)
+        set(v) = sp.edit().putInt("quizGap", v.coerceIn(30, 1800)).apply()
+
+    // ------------------------------------------------------------ LLM 兜底
+
+    /** LLM 开关。默认关；填了 key 并且打开才会用 */
+    var quizLlmEnabled: Boolean
+        get() = sp.getBoolean("quizLlmEnabled", false)
+        set(v) = sp.edit().putBoolean("quizLlmEnabled", v).apply()
+
+    /** OpenAI 兼容接口的 key（DeepSeek 默认） */
+    var quizLlmKey: String
+        get() = sp.getString("quizLlmKey", "") ?: ""
+        set(v) = sp.edit().putString("quizLlmKey", v).apply()
+
+    /** baseUrl，DeepSeek 是 https://api.deepseek.com */
+    var quizLlmBaseUrl: String
+        get() = sp.getString("quizLlmBaseUrl", "https://api.deepseek.com") ?: "https://api.deepseek.com"
+        set(v) = sp.edit().putString("quizLlmBaseUrl", v).apply()
+
+    /** 模型名，DeepSeek 是 deepseek-chat */
+    var quizLlmModel: String
+        get() = sp.getString("quizLlmModel", "deepseek-chat") ?: "deepseek-chat"
+        set(v) = sp.edit().putString("quizLlmModel", v).apply()
+
+    /** 字体反解的最低相似度，低于它算「待复核」，不采信 */
+    var quizFontThreshold: Float
+        get() = sp.getFloat("quizFontThreshold", 0.86f).coerceIn(0.5f, 0.99f)
+        set(v) = sp.edit().putFloat("quizFontThreshold", v.coerceIn(0.5f, 0.99f)).apply()
 
     /** 已勾选要刷的章节，元素形如 "courseId:clazzId#chapterId" */
     var studySelectedChapters: Set<String>
