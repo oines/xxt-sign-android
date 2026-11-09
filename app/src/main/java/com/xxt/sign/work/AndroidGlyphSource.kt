@@ -51,13 +51,12 @@ object AndroidReferenceFonts {
 
     fun list(context: Context): List<ReferenceFont> {
         cached?.let { return it }
-        val fonts = LinkedHashMap<String, ReferenceFont>()
+        val candidates = LinkedHashMap<String, Typeface>()
 
         fun add(name: String, tf: Typeface?) {
             if (tf == null) return
-            if (fonts.containsKey(name)) return
-            if (!drawsChinese(tf)) return
-            fonts[name] = ReferenceFont(name) { c, s -> GlyphRaster.render(tf, c, s) }
+            if (candidates.containsKey(name)) return
+            candidates[name] = tf
         }
 
         add("系统黑体", Typeface.SANS_SERIF)
@@ -92,10 +91,43 @@ object AndroidReferenceFonts {
                 }
         }
 
-        val list = fonts.values.toList()
+        // 去重 + 体检 + 封顶：很多机型 SANS_SERIF/SERIF/DEFAULT/MONOSPACE 指向同一个
+        // Noto Sans CJK，不去重就等于把 3755 个候选字渲染十几遍，真机上会卡成幻灯片
+        val kept = mutableListOf<Pair<String, List<FloatArray>>>()
+        candidates.forEach { (name, tf) ->
+            if (kept.size >= MAX_REFERENCES) return@forEach
+            val sig = signature(tf) ?: return@forEach
+            if (kept.any { sameFont(it.second, sig) }) return@forEach
+            kept.add(name to sig)
+        }
+
+        val list = kept.map { (name, _) ->
+            val tf = candidates[name]!!
+            ReferenceFont(name) { c, s -> GlyphRaster.render(tf, c, s) }
+        }
         cached = list
         return list
     }
+
+    /** 最多几套参考字体：再多对准确率没帮助，只会把整卷预处理拖慢 */
+    private const val MAX_REFERENCES = 6
+
+    private val PROBE_CHARS = charArrayOf('中', '国', '的', '一')
+
+    /** 用几个典型字给字体做指纹；任何一画不出来、或「中/国」长得一模一样（缺字豆腐块）就丢掉 */
+    private fun signature(tf: Typeface): List<FloatArray>? {
+        val vecs = ArrayList<FloatArray>(PROBE_CHARS.size)
+        for (ch in PROBE_CHARS) {
+            val v = runCatching { GlyphRaster.render(tf, ch, 16) }.getOrNull() ?: return null
+            vecs.add(v)
+        }
+        if (FontDecoder.cosine(vecs[0], vecs[1]) > 0.97f) return null
+        return vecs
+    }
+
+    /** 四字指纹都几乎一致 = 同一套字体（同一字体工厂返回的不同名字） */
+    private fun sameFont(a: List<FloatArray>, b: List<FloatArray>): Boolean =
+        a.size == b.size && a.indices.all { FontDecoder.cosine(a[it], b[it]) > 0.999f }
 
     /** 清缓存（设置里换字体后重新枚举用） */
     fun invalidate() {
@@ -112,16 +144,6 @@ object AndroidReferenceFonts {
             "cjk", "notosans", "notoserif", "sourcehan", "droid",
             "misansw", "wqy", "droidsansfallback", "hans", "sc-"
         ).any { n.contains(it) }
-    }
-
-    /**
-     * 这套字体能不能画中文：'中' 和 '国' 都要有像素，且不能长得一模一样
-     * （缺字时全是同一个豆腐块 → 相似度 1.0，会把所有参考都带偏）。
-     */
-    private fun drawsChinese(tf: Typeface): Boolean {
-        val a = runCatching { GlyphRaster.render(tf, '中', 16) }.getOrNull() ?: return false
-        val b = runCatching { GlyphRaster.render(tf, '国', 16) }.getOrNull() ?: return false
-        return FontDecoder.cosine(a, b) < 0.97f
     }
 }
 
