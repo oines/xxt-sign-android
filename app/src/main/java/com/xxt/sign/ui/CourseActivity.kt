@@ -13,9 +13,11 @@ import com.xxt.sign.core.Settings
 import com.xxt.sign.databinding.ActivityCourseBinding
 import com.xxt.sign.study.CourseAuditStore
 import com.xxt.sign.study.ChapterRow
+import com.xxt.sign.study.CourseAudit
 import com.xxt.sign.study.CourseRunQueue
 import com.xxt.sign.study.StudyCourse
 import com.xxt.sign.study.StudyCourseStore
+import com.xxt.sign.study.stateByTaskPoints
 import androidx.recyclerview.widget.LinearLayoutManager
 import kotlinx.coroutines.launch
 
@@ -105,31 +107,75 @@ class CourseActivity : AppCompatActivity() {
         b.progress.visibility = if (total > 0) android.view.View.VISIBLE else android.view.View.GONE
         b.progress.setProgressCompat(percent, false)
 
-        // 逐章列表：数据来自体检结果 + 本地章节缓存，不额外请求；正在跑的那章高亮
+        // 逐章列表：**有体检行就只用体检行**，缓存只用来补体检没跑过的章。
+        // 行状态由 done/total 现算，不信任持久化里的旧状态字符串（旧版本存的是图标口径）。
         val current = run?.currentChapter.orEmpty()
         val runningNow = run?.running == true && current.isNotBlank()
         val cachedChapters = AccountStore.get(Settings.studyAccountId)
             ?.let { StudyCourseStore.load(it.id) }
             ?.chapters?.get(c.key).orEmpty()
-        val chapterRows = mergeChapterRows(audit?.chapterRows.orEmpty(), cachedChapters, current, runningNow)
+        val auditRows = audit?.chapterRows.orEmpty()
+        // 旧版本存下的行（rowsVersion<2）是图标口径，不能信：当没体检过，宁可显示「没查到」
+        val rowsTrusted = (audit?.rowsVersion ?: 0) >= CourseAudit.ROWS_VERSION
+        val fromAudit = rowsTrusted && auditRows.isNotEmpty()
+        val chapterRows = if (fromAudit) {
+            auditRows.map { r ->
+                ChapterRowAdapter.Row(
+                    title = r.title,
+                    done = r.done,
+                    total = r.total,
+                    state = r.stateByTaskPoints(),
+                    running = runningNow && r.title == current,
+                    videoDone = r.videoDone,
+                    videoTasks = r.videoTasks
+                )
+            }
+        } else {
+            cachedChapters.map { ch ->
+                ChapterRowAdapter.Row(
+                    title = ch.title,
+                    done = 0,
+                    total = ch.jobCount.coerceAtLeast(0),
+                    state = when {
+                        ch.finished -> ChapterRow.State.DONE
+                        ch.needUnlock -> ChapterRow.State.LOCKED
+                        // 只有章节列表、没有任务点明细：就是没查到，不能编「未开始」
+                        else -> ChapterRow.State.UNCHECKED
+                    },
+                    running = runningNow && ch.title == current
+                )
+            }
+        }
         chapterAdapter.submit(chapterRows)
 
         val finishedChapters = chapterRows.count { it.state == ChapterRow.State.DONE }
+        val partialChapters = chapterRows.count { it.state == ChapterRow.State.PARTIAL }
         b.tvChapterHeader.visibility = if (chapterRows.isEmpty()) android.view.View.GONE else android.view.View.VISIBLE
         b.tvChapterHeader.text = "章节 · $finishedChapters/${chapterRows.size} 章已完成"
 
-        // 真机排障：列表为空到底是没体检、课程 id 对不上，还是缓存里也没章节
-        val signature = "${chapterRows.size}/${audit?.chapterRows?.size}/${cachedChapters.size}/$current"
+        // 真机一眼可见的验收日志：计数口径 + 行状态到底从哪来
+        val signature = "${chapterRows.size}/${auditRows.size}/${cachedChapters.size}/$finishedChapters/$current"
         if (signature != lastLoggedSignature) {
             lastLoggedSignature = signature
             LogStore.add(
-                "[课程页] ${c.title} 章节列表 ${chapterRows.size} 行" +
-                    "（体检 ${audit?.chapterRows?.size ?: 0} / 缓存 ${cachedChapters.size}）" +
+                "[课程页] ${c.title} 已完成章 $finishedChapters/${chapterRows.size}" +
+                    "（体检口径）· 部分完成 $partialChapters · 行状态来源 ${if (fromAudit) "体检" else "缓存"}" +
+                    " · 列表 ${chapterRows.size} 行（体检 ${auditRows.size} / 缓存 ${cachedChapters.size}）" +
                     "，正在刷：${current.ifBlank { "—" }}",
                 chapterRows.isNotEmpty()
             )
             if (chapterRows.isEmpty()) {
                 LogStore.add("[课程页] 章节列表是空的：体检结果里有这门课的章节行吗？课程 id=${c.courseId}", false)
+            }
+            if (!fromAudit) {
+                if (auditRows.isNotEmpty() && !rowsTrusted) {
+                    LogStore.add(
+                        "[课程页] 体检行是旧版图标口径（v${audit?.rowsVersion ?: 0}），已忽略；下一轮体检后刷新成任务点口径",
+                        false
+                    )
+                } else {
+                    LogStore.add("[课程页] 这门课还没有体检行，行状态只能用缓存（没明细，一律「没查到」）", false)
+                }
             }
         }
 
@@ -157,42 +203,6 @@ class CourseActivity : AppCompatActivity() {
             window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         } else {
             window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-        }
-    }
-
-    /**
-     * 逐章列表：体检行优先（状态最准），体检缺的章用本地章节缓存补，
-     * 两边都没有才真的空。零额外请求。
-     */
-    private fun mergeChapterRows(
-        audited: List<ChapterRow>,
-        cached: List<com.xxt.sign.study.StudyChapter>,
-        current: String,
-        runningNow: Boolean
-    ): List<ChapterRowAdapter.Row> {
-        val byTitle = audited.associateBy { it.title }
-        val titles = LinkedHashSet<String>()
-        audited.forEach { titles.add(it.title) }
-        cached.forEach { titles.add(it.title) }
-        return titles.map { title ->
-            val row = byTitle[title]
-            val ch = cached.firstOrNull { it.title == title }
-            val state = row?.state ?: when {
-                ch == null -> ChapterRow.State.UNCHECKED
-                ch.finished -> ChapterRow.State.DONE
-                ch.needUnlock -> ChapterRow.State.LOCKED
-                // 只有缓存、没体检过的章：不能编「未开始」，就是没查到
-                else -> ChapterRow.State.UNCHECKED
-            }
-            ChapterRowAdapter.Row(
-                title = title,
-                done = row?.done ?: 0,
-                total = row?.total ?: ch?.jobCount ?: 0,
-                state = state,
-                running = runningNow && title == current,
-                videoDone = row?.videoDone ?: 0,
-                videoTasks = row?.videoTasks ?: 0
-            )
         }
     }
 

@@ -33,6 +33,8 @@ data class CourseAudit(
     val chapterRows: List<ChapterRow> = emptyList(),
     val chapters: Int = 0,
     val checkedChapters: Int = 0,
+    /** 逐章行状态的口径版本：2 = 按任务点算（done/total）；<2 是旧版图标口径，界面不得直接用 */
+    val rowsVersion: Int = ROWS_VERSION,
     val auditedAt: Long = System.currentTimeMillis()
 ) {
     enum class Kind { VIDEO, DOCUMENT, QUIZ, HUMAN, UNKNOWN }
@@ -45,6 +47,11 @@ data class CourseAudit(
 
     /** 还差多少任务点（含需本人的，界面上的「还差」就是这个数） */
     val remaining: Int get() = (taskPoints - doneTaskPoints).coerceAtLeast(0)
+
+    companion object {
+        /** 逐章行状态口径版本：只有这个版本的缓存行才可以拿来渲染 */
+        const val ROWS_VERSION = 2
+    }
 
     /** 它自己还能做完的缺口 */
     val autoRemaining: Int get() = videoPending + documentPending + quizPending
@@ -107,6 +114,21 @@ data class ChapterRow(
         /** 没检查到（扫描失败 / 体检没跑到） */
         UNCHECKED
     }
+}
+
+/**
+ * 界面渲染用的状态：**按 done/total 现算**，不信任持久化里的旧状态字符串。
+ *
+ * 旧版本把逐章状态写成了图标口径（`icon_yiwanc`），存下来的 "TODO" 会让刷完的章
+ * 永远显示「未开始」；所以渲染时一律根据任务点数字重算。
+ */
+fun ChapterRow.stateByTaskPoints(): ChapterRow.State = when {
+    state == ChapterRow.State.LOCKED -> ChapterRow.State.LOCKED
+    total > 0 && done >= total -> ChapterRow.State.DONE
+    done > 0 -> ChapterRow.State.PARTIAL
+    total > 0 -> ChapterRow.State.TODO
+    // 没有任何任务点明细：就是没查到，不能编「未开始」
+    else -> ChapterRow.State.UNCHECKED
 }
 
 /** 单章的检查输入：这章的任务点检查结果 */

@@ -39,6 +39,7 @@ object CourseAuditStore {
                     .put("documentPending", a.documentPending)
                     .put("humanPending", a.humanPending).put("chapters", a.chapters)
                     .put("checkedChapters", a.checkedChapters).put("auditedAt", a.auditedAt)
+                    .put("rowsVersion", a.rowsVersion)
                     .put("rows", rows)
             )
         }
@@ -78,6 +79,7 @@ object CourseAuditStore {
                     } ?: emptyList(),
                     chapters = o.optInt("chapters"),
                     checkedChapters = o.optInt("checkedChapters"),
+                    rowsVersion = o.optInt("rowsVersion", 0),
                     auditedAt = o.optLong("auditedAt")
                 )
             }

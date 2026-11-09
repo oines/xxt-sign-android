@@ -121,7 +121,9 @@ class CourseAuditor(
         log("[体检] ${audit.headline()}", audit.allGreen)
         // 真机取证口子：类型分布一眼能看出「需本人」到底是哪类
         log(
-            "[体检] ${course.title} 口径：章节 ${audit.checkedChapters}/${chapters.size}（按图标直接判完成 $byIcon 章）" +
+            "[体检] ${course.title} 口径：已检查章节 ${audit.checkedChapters}/${chapters.size}" +
+                "（按图标直接判完成 $byIcon 章，仅作参考）" +
+                " · 已完成章 ${audit.chapterRows.count { it.state == ChapterRow.State.DONE }}/${audit.chapterRows.size}（按任务点）" +
                 " · 任务点 ${audit.taskPoints}，已完成 ${audit.doneTaskPoints}" +
                 " · 待做 视频 ${audit.videoPending} / 文档 ${audit.documentPending}" +
                 " / 测验 ${audit.quizPending} / 需本人 ${audit.humanPending}",

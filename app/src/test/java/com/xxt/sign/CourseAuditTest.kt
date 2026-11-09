@@ -5,6 +5,7 @@ import com.xxt.sign.study.ChapterRow
 import com.xxt.sign.study.CardTask
 import com.xxt.sign.study.CourseAuditCalculator
 import com.xxt.sign.study.summarizeChapter
+import com.xxt.sign.study.stateByTaskPoints
 import com.xxt.sign.study.withPlatformTotals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -203,6 +204,24 @@ class CourseAuditTest {
         assertEquals(ChapterRow.State.UNCHECKED, a.chapterRows[1].state)
         assertEquals(1, a.taskPoints)
         assertEquals(2, a.chapterRows.size)
+    }
+
+    /** 旧版本存下的状态字符串（图标口径）不能污染界面：渲染时按 done/total 现算 */
+    @Test
+    fun rowStateIsRecomputedFromCounts() {
+        fun row(done: Int, total: Int, state: ChapterRow.State) =
+            ChapterRow("x", total, done, state)
+
+        // 旧缓存里写的是 TODO，但任务点已经全完成 → 已完成
+        assertEquals(ChapterRow.State.DONE, row(4, 4, ChapterRow.State.TODO).stateByTaskPoints())
+        // 做了一部分 → 部分完成
+        assertEquals(ChapterRow.State.PARTIAL, row(1, 4, ChapterRow.State.TODO).stateByTaskPoints())
+        // 一个没做 → 未开始
+        assertEquals(ChapterRow.State.TODO, row(0, 4, ChapterRow.State.UNCHECKED).stateByTaskPoints())
+        // 没有任务点明细 → 没查到，不编「未开始」
+        assertEquals(ChapterRow.State.UNCHECKED, row(0, 0, ChapterRow.State.TODO).stateByTaskPoints())
+        // 未开放原样保留
+        assertEquals(ChapterRow.State.LOCKED, row(0, 0, ChapterRow.State.LOCKED).stateByTaskPoints())
     }
 
     @Test
