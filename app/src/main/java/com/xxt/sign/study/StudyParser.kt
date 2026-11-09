@@ -224,21 +224,53 @@ object StudyParser {
     }
 
     /**
-     * 章节目录页上的「已完成任务点: X/Y」——平台自己的口径，数字最可信。
-     * 真机上就是这个数（392）跟 App 自数的对不上，所以要拿它做分母。
+     * 章节目录页上的「已完成任务点: <span>11</span>/392」—— 平台自己的口径，数字最可信。
+     *
+     * 真机 HTML（注意数字后面紧跟 </span>，所以 >数字< 那套匹配不到）：
+     * ```
+     * 已完成任务点: <span style="color:#00B368">11</span>/392
+     * ```
+     * **不用正则**（ICU 上次已经坑过一次）：纯字符扇描 —— 找字面量，跳过非数字读到 X，
+     * 再往后找 `/`，再读到下一个纯数字 Y。
      */
     fun parseTaskPointTotals(html: String): Pair<Int, Int>? {
-        val idx = html.indexOf("已完成任务点")
-        if (idx < 0) return null
-        val tail = html.substring(idx, minOf(html.length, idx + 400))
-        // 形如：已完成任务点: <span>11</span>/<span>392</span> 或 已完成任务点: 11/392
-        val spans = Regex(">\\s*(\\d{1,5})\\s*<").findAll(tail).map { it.groupValues[1].toInt() }.take(2).toList()
-        if (spans.size == 2) return spans[0] to spans[1]
-        val plain = Regex("(\\d{1,5})\\s*/\\s*(\\d{1,5})").find(tail) ?: return null
-        val done = plain.groupValues[1].toInt()
-        val total = plain.groupValues[2].toInt()
-        if (total <= 0 || done > total) return null
-        return done to total
+        val key = "已完成任务点"
+        val start = html.indexOf(key)
+        if (start < 0) return null
+        val cursor = NumberCursor(html, start + key.length)
+        // 注意 <span style="color:#00B368"> 里的数字不能当数据，所以只读「标签外」的数字
+        val x = cursor.nextNumber() ?: return null
+        val afterX = cursor.pos
+        val slash = html.indexOf('/', afterX)
+        if (slash < 0 || slash - afterX > 60) return null
+        val y = NumberCursor(html, slash + 1).nextNumber() ?: return null
+        if (y <= 0 || x > y) return null
+        return x to y
+    }
+
+    /** 只认标签外（`<...>` 之外）的数字，扫到第一串数字就停 */
+    private class NumberCursor(private val s: String, from: Int) {
+        var pos = from
+            private set
+        private var inTag = false
+
+        fun nextNumber(): Int? {
+            val sb = StringBuilder()
+            while (pos < s.length) {
+                val c = s[pos]
+                when {
+                    c == '<' -> {
+                        inTag = true
+                        if (sb.isNotEmpty()) return sb.toString().toIntOrNull()
+                    }
+                    c == '>' -> inTag = false
+                    !inTag && c in '0'..'9' -> sb.append(c)
+                    else -> if (sb.isNotEmpty()) return sb.toString().toIntOrNull()
+                }
+                pos++
+            }
+            return if (sb.isNotEmpty()) sb.toString().toIntOrNull() else null
+        }
     }
 
     /** attachment 带 jobid 且 job==true 才算任务点（全账号 897 个就是这么数出来的） */

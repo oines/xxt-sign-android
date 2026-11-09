@@ -123,6 +123,12 @@ class StudyApi(private val session: CxSession) {
         val r = c.get(url)
         checkLogin(r.body)
         val totals = StudyParser.parseTaskPointTotals(r.body)
+        if (totals == null && r.body.contains("已完成任务点")) {
+            // 真机取证：找到了关键字但没读出数字，把附近片段打到日志里，下次一眼能修
+            val at = r.body.indexOf("已完成任务点")
+            val snippet = r.body.substring(at, minOf(r.body.length, at + 160)).replace("\n", " ")
+            LogStore.add("[体检] 平台的「已完成任务点」没解析出数字，片段：$snippet", false)
+        }
         return ChapterPage(
             chapters = StudyParser.parseChapters(r.body),
             donePoints = totals?.first ?: -1,

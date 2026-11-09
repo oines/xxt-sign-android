@@ -230,13 +230,25 @@ class StudyParserTest {
         assertEquals(1, r.malformed)
     }
 
-    /** 平台自报的「已完成任务点 X/Y」才是 392 这种口径 */
+    /** 平台自报的「已完成任务点 X/Y」：真机原样 HTML（数字后面紧跟 </span>，不能靠 >数字<） */
     @Test
-    fun parseTaskPointTotals_readsPlatformNumbers() {
-        val html0 = """<span>已完成任务点:</span> <span class="orange">11</span> / <span>392</span>"""
-        assertEquals(11 to 392, StudyParser.parseTaskPointTotals(html0))
-        val html1 = """<div class="bj"><span>已完成任务点: 11/392</span></div>"""
-        assertEquals(11 to 392, StudyParser.parseTaskPointTotals(html1))
+    fun parseTaskPointTotals_readsRealMarkup() {
+        val real = """
+            <h2 class="xs_head_name fl" tabindex="0"><i class="catalog_points_yi fl"></i>
+
+            已完成任务点: <span style="color:#00B368">11</span>/392
+                    <div class="catalog_jindu">
+                        <div class="catalog_ressbar"><div class="catalog_ressbar_width" style="width:2%"></div></div>
+                    </div>
+            </h2>
+        """.trimIndent()
+        assertEquals(11 to 392, StudyParser.parseTaskPointTotals(real))
+    }
+
+    @Test
+    fun parseTaskPointTotals_toleratesPlainTextAndRejectsGarbage() {
+        assertEquals(11 to 392, StudyParser.parseTaskPointTotals("已完成任务点: 11/392"))
+        assertEquals(392 to 392, StudyParser.parseTaskPointTotals("已完成任务点：392/392"))
         assertEquals(null, StudyParser.parseTaskPointTotals("<html>没有这行</html>"))
         assertEquals(null, StudyParser.parseTaskPointTotals("已完成任务点: 0/0"))
     }

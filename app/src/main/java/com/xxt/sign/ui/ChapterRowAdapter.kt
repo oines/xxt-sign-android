@@ -48,8 +48,9 @@ class ChapterRowAdapter : RecyclerView.Adapter<ChapterRowAdapter.Holder>() {
     class Holder(private val b: ItemChapterRowBinding) : RecyclerView.ViewHolder(b.root) {
         fun bind(row: Row) {
             val ctx = b.root.context
+            // 只渲染状态：逐章的数字口径跟顶部（平台 X/Y）还没完全统一，
+            // 摆出来只会跟 392 打架，不如不摆
             b.tvChapterName.text = row.title
-            b.tvChapterCount.text = if (row.total > 0) "${row.done}/${row.total}" else ""
 
             val (label, colorRes) = when {
                 row.running -> "进行中" to R.color.primary

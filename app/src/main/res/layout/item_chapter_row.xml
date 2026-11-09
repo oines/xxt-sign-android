@@ -23,15 +23,6 @@
         tools:text="2.1 什么是健康?" />
 
     <TextView
-        android:id="@+id/tvChapterCount"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:layout_marginStart="8dp"
-        android:textColor="@color/muted"
-        android:textSize="12sp"
-        tools:text="3/4" />
-
-    <TextView
         android:id="@+id/tvChapterState"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
