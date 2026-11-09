@@ -80,7 +80,12 @@ class QuizAutoRunner(
                             courseTitle = course.title
                         )
                     }
-                    QuizHandledStore.mark(accountId, job.key, r.needsHuman)
+                    // 只有真交了 / 卡在硬阻塞才记账；失败的不标，下一轮重试
+                    if (r.submitted || r.needsHuman) {
+                        QuizHandledStore.mark(accountId, job.key, r.needsHuman)
+                    } else {
+                        log("[测验] ${job.chapterTitle} 这份没完成，下一轮重试", false)
+                    }
                     if (r.needsHuman) pending++
                     results.add(r)
                 }

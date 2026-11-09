@@ -257,8 +257,9 @@ class MonitorService : Service() {
     }
 
     private fun maybeStartQuizPatrol() {
-        // 不再有全局开关：只有「有课程在跑」时才做测验巡检
-        if (!com.xxt.sign.study.CourseRunQueue.anyActive()) return
+        // 课程暂停也算「用户开了这门课」：视频可以停，测验照样继续做。
+        // 只有一次都没点过开始的账号才不跑，避免无谓请求。
+        if (com.xxt.sign.study.CourseRunQueue.states.value.isEmpty()) return
         val acc = AccountStore.get(Settings.studyAccountId) ?: return
         if (System.currentTimeMillis() - Settings.quizLastPatrolAt < Settings.quizPatrolMinutes * 60_000L) return
         if (quizJob?.isActive == true) return
@@ -367,8 +368,21 @@ class MonitorService : Service() {
             log = { msg, ok -> LogStore.add(msg, ok) }
         )
         val runner = QuizAutoRunner(acc.id, studyApi, WorkApi(session), engine)
-        val pass = runner.patrol(courses)
+        // 一轮把当前这门课的测验都摸到（游标轮换课程），否则 58 章要轮好几轮才能碰到
+        val pass = runner.patrol(courses, maxCourses = 1, maxQuizzes = 8, maxChaptersPerCourse = 400)
         if (pass.empty) return
+
+        // 每份都要有下落：交了的带分数，没交的说原因
+        pass.results.forEach { r ->
+            val head = "${r.courseTitle.ifBlank { "课程" }} · ${r.title}"
+            when {
+                r.needsHuman -> LogStore.add("[测验] $head 需人工：${r.message}", false)
+                r.submitted && r.score.isNotBlank() ->
+                    LogStore.add("[测验] 已交《$head》：${r.score} 分（答上 ${r.answered}/${r.total}）", true)
+                r.submitted -> LogStore.add("[测验] 已交《$head》：答上 ${r.answered}/${r.total}（回查未出分）", true)
+                else -> LogStore.add("[测验] $head 没交上：${r.message}", false)
+            }
+        }
 
         val lines = pass.results.map { r ->
             val head = r.courseTitle.ifBlank { "课程" } + " · " + r.title

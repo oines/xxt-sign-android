@@ -2,6 +2,7 @@ package com.xxt.sign.net
 
 import com.xxt.sign.core.Account
 import com.xxt.sign.core.LogStore
+import com.xxt.sign.sign.SessionGate
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
@@ -55,14 +56,14 @@ class CxSession(val account: Account) {
 
     fun hasCookies(): Boolean = account.cookies.isNotBlank()
 
-    /** 会话是否仍然有效 */
+    /** 会话是否仍然有效（便宜检查：账号管理页；失败不代表失效，见 [probeSession]） */
     suspend fun checkSession(): Boolean = withContext(Dispatchers.IO) {
         try {
             val b = client.get(URL_ACCOUNT_MANAGE).body
             when {
                 b.isBlank() -> false
                 b.contains("messageName") -> true
-                b.contains("请输入手机号") || b.contains("忘记密码") || b.contains("fanyalogin") -> false
+                looksLoggedOut(b) -> false
                 else -> jar.value("_uid").isNotBlank()
             }
         } catch (e: Exception) {
@@ -70,12 +71,48 @@ class CxSession(val account: Account) {
         }
     }
 
+    /**
+     * 真请求探测会话：拉一次业务页面（课程/文件夹列表）。
+     *
+     * 为什么不能只看账号管理页：短信验证码登录（authType=sms）的账号，
+     * 那个页面本来就不渲染 messageName，cookie 明明有效也会被判成未登录。
+     * 这里直接看业务页：拿得到内容 = 登录有效；被踢到登录页/登录表单 = 失效。
+     */
+    suspend fun probeSession(): Boolean = withContext(Dispatchers.IO) {
+        if (!hasCookies()) return@withContext false
+        try {
+            val r = client.get(PROBE_URL)
+            val b = r.body
+            if (b.isBlank()) return@withContext false
+            if (looksLoggedOut(b)) return@withContext false
+            // 业务页特征：课程/文件夹/我的课程，至少有一样
+            b.contains("course") || b.contains("课程") || b.contains("folder")
+        } catch (e: Exception) {
+            false
+        }
+    }
+
+    /** 登录页 / 登录表单的特征 */
+    private fun looksLoggedOut(body: String): Boolean =
+        body.contains("请输入手机号") ||
+            body.contains("忘记密码") ||
+            body.contains("fanyalogin") ||
+            body.contains("passport2.chaoxing.com/mlogin") ||
+            body.contains("passport2.chaoxing.com/login")
+
     // ------------------------------------------------------------ 密码登录
 
     /** 密码登录。返回空串表示成功，否则为错误信息。 */
     suspend fun login(): String = withContext(Dispatchers.IO) {
+        // 短信验证码 / 网页登录的账号根本没密码：一律不拿密码去试，报清楚要人怎么重新登
+        if (account.authType != Account.AUTH_PWD) {
+            val m = SessionGate.reloginMessage(account.authType)
+            account.lastError = m
+            persist()
+            return@withContext m
+        }
         if (account.password.isBlank()) {
-            val m = "该账号是短信验证码登录，请在账号页删除后重新用验证码添加"
+            val m = SessionGate.reloginMessage(account.authType)
             account.lastError = m
             persist()
             return@withContext m
@@ -303,6 +340,9 @@ class CxSession(val account: Account) {
             "https://passport2.chaoxing.com/mlogin?fid=&newversion=true&refer=http%3A%2F%2Fi.chaoxing.com"
         private const val URL_SELF_HOME = "https://i.chaoxing.com/base"
         private const val URL_ACCOUNT_MANAGE = "https://passport2.chaoxing.com/mooc/accountManage"
+
+        /** 会话探测页：业务页，未登录会被踢到 passport */
+        private const val PROBE_URL = "https://mooc2-ans.chaoxing.com/mooc2-ans/visit/interaction"
         private const val REFER_ENCODED = "http%3A%2F%2Fi.chaoxing.com"
 
         private val NAME_PATTERNS = listOf(
