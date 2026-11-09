@@ -47,13 +47,17 @@ class HomeCourseAdapter(
             val audit = audits[item.courseId]
             b.tvCourseTitle.text = item.title
 
-            // 没数据就什么都不显示，别写「还没体检」这种废话
-            val hasData = audit != null && audit.taskPoints > 0
+            // 任务点数字跟课程页用同一个数据源：在跑就用运行时状态，没跑就用体检缓存
+            val liveDone = run?.takeIf { it.totalPoints > 0 }?.donePoints
+            val liveTotal = run?.takeIf { it.totalPoints > 0 }?.totalPoints
+            val donePts = liveDone ?: audit?.doneTaskPoints
+            val totalPts = liveTotal ?: audit?.taskPoints
+            val hasData = totalPts != null && totalPts > 0
             b.tvCourseNumbers.visibility = if (hasData) View.VISIBLE else View.GONE
             b.progressCourse.visibility = if (hasData) View.VISIBLE else View.GONE
             if (hasData) {
-                b.tvCourseNumbers.text = "任务点 ${audit!!.doneTaskPoints}/${audit.taskPoints}"
-                b.progressCourse.setProgressCompat(audit.doneTaskPoints * 100 / audit.taskPoints, false)
+                b.tvCourseNumbers.text = "任务点 ${donePts ?: 0}/$totalPts"
+                b.progressCourse.setProgressCompat(((donePts ?: 0) * 100 / totalPts!!), false)
             }
 
             // 只有真的在跑 / 卡住 / 要你动手时才写一行状态，其余留白

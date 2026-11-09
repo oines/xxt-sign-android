@@ -3,12 +3,12 @@ package com.xxt.sign.study
 import android.content.SharedPreferences
 import com.xxt.sign.core.AccountStore
 import com.xxt.sign.core.Settings
-import org.json.JSONArray
-import org.json.JSONObject
 
 /**
  * 体检结果缓存：首页不联网也能显示「还差几个任务点」，
  * 巡检跑完后写回，界面跟着变。
+ *
+ * 格式定义在 [CourseAuditJson]（读写共用，避免漏写 rowsVersion 这种事故）。
  */
 object CourseAuditStore {
 
@@ -20,76 +20,22 @@ object CourseAuditStore {
 
     fun save(accountId: String, audits: List<CourseAudit>) {
         if (accountId.isBlank() || !::sp.isInitialized) return
-        val arr = JSONArray()
-        audits.forEach { a ->
-            val rows = JSONArray()
-            a.chapterRows.forEach { r ->
-                rows.put(
-                    JSONObject()
-                        .put("t", r.title).put("d", r.done).put("n", r.total)
-                        .put("s", r.state.name)
-                        .put("vd", r.videoDone).put("vt", r.videoTasks)
-                )
-            }
-            arr.put(
-                JSONObject()
-                    .put("courseId", a.courseId).put("courseTitle", a.courseTitle)
-                    .put("taskPoints", a.taskPoints).put("doneTaskPoints", a.doneTaskPoints)
-                    .put("videoPending", a.videoPending).put("quizPending", a.quizPending)
-                    .put("documentPending", a.documentPending)
-                    .put("humanPending", a.humanPending).put("chapters", a.chapters)
-                    .put("checkedChapters", a.checkedChapters).put("auditedAt", a.auditedAt)
-                    .put("rowsVersion", a.rowsVersion)
-                    .put("rows", rows)
-            )
-        }
-        sp.edit().putString(accountId, arr.toString()).apply()
+        sp.edit().putString(accountId, CourseAuditJson.encode(audits)).apply()
     }
 
     fun load(accountId: String): List<CourseAudit> {
         if (accountId.isBlank() || !::sp.isInitialized) return emptyList()
         val raw = sp.getString(accountId, "") ?: return emptyList()
-        if (raw.isBlank()) return emptyList()
-        return runCatching {
-            val arr = JSONArray(raw)
-            (0 until arr.length()).mapNotNull { i ->
-                val o = arr.optJSONObject(i) ?: return@mapNotNull null
-                CourseAudit(
-                    courseId = o.optString("courseId"),
-                    courseTitle = o.optString("courseTitle"),
-                    taskPoints = o.optInt("taskPoints"),
-                    doneTaskPoints = o.optInt("doneTaskPoints"),
-                    videoPending = o.optInt("videoPending"),
-                    documentPending = o.optInt("documentPending"),
-                    quizPending = o.optInt("quizPending"),
-                    humanPending = o.optInt("humanPending"),
-                    chapterRows = o.optJSONArray("rows")?.let { rows ->
-                        (0 until rows.length()).mapNotNull { i ->
-                            val r = rows.optJSONObject(i) ?: return@mapNotNull null
-                            ChapterRow(
-                                title = r.optString("t"),
-                                total = r.optInt("n"),
-                                done = r.optInt("d"),
-                                state = runCatching { ChapterRow.State.valueOf(r.optString("s")) }
-                                    .getOrDefault(ChapterRow.State.UNCHECKED),
-                                videoDone = r.optInt("vd"),
-                                videoTasks = r.optInt("vt")
-                            )
-                        }
-                    } ?: emptyList(),
-                    chapters = o.optInt("chapters"),
-                    checkedChapters = o.optInt("checkedChapters"),
-                    rowsVersion = o.optInt("rowsVersion", 0),
-                    auditedAt = o.optLong("auditedAt")
-                )
-            }
-        }.getOrDefault(emptyList())
+        return CourseAuditJson.decode(raw)
     }
 
     fun loadCurrent(): List<CourseAudit> {
         val account = AccountStore.get(Settings.studyAccountId) ?: return emptyList()
         return load(account.id)
     }
+
+    /** 存一轮、读回来：单测和真机自检都用它确认格式没走样 */
+    fun roundTrip(audits: List<CourseAudit>): List<CourseAudit> = CourseAuditJson.decode(CourseAuditJson.encode(audits))
 
     /** 全绿了几门 / 一共几门 / 还差多少任务点 */
     fun summary(audits: List<CourseAudit>): Triple<Int, Int, Int> {

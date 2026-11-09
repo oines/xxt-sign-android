@@ -115,9 +115,15 @@ class CourseActivity : AppCompatActivity() {
             ?.let { StudyCourseStore.load(it.id) }
             ?.chapters?.get(c.key).orEmpty()
         val auditRows = audit?.chapterRows.orEmpty()
-        // 旧版本存下的行（rowsVersion<2）是图标口径，不能信：当没体检过，宁可显示「没查到」
-        val rowsTrusted = (audit?.rowsVersion ?: 0) >= CourseAudit.ROWS_VERSION
+        val storedVersion = audit?.rowsVersion ?: 0
+        // 版本对，或者行里有 done/total 明细 → 都能按任务点现算；啥都没有才退缓存
+        val rowsTrusted = storedVersion >= CourseAudit.ROWS_VERSION || auditRows.any { it.total > 0 }
         val fromAudit = rowsTrusted && auditRows.isNotEmpty()
+        val source = when {
+            !fromAudit -> "缓存"
+            storedVersion >= CourseAudit.ROWS_VERSION -> "体检"
+            else -> "体检（旧行按明细重算 v$storedVersion）"
+        }
         val chapterRows = if (fromAudit) {
             auditRows.map { r ->
                 ChapterRowAdapter.Row(
@@ -154,27 +160,34 @@ class CourseActivity : AppCompatActivity() {
         b.tvChapterHeader.text = "章节 · $finishedChapters/${chapterRows.size} 章已完成"
 
         // 真机一眼可见的验收日志：计数口径 + 行状态到底从哪来
-        val signature = "${chapterRows.size}/${auditRows.size}/${cachedChapters.size}/$finishedChapters/$current"
+        val signature = "${chapterRows.size}/${auditRows.size}/${cachedChapters.size}/$finishedChapters/$current/$source"
         if (signature != lastLoggedSignature) {
             lastLoggedSignature = signature
             LogStore.add(
                 "[课程页] ${c.title} 已完成章 $finishedChapters/${chapterRows.size}" +
-                    "（体检口径）· 部分完成 $partialChapters · 行状态来源 ${if (fromAudit) "体检" else "缓存"}" +
+                    "（体检口径）· 部分完成 $partialChapters · 行状态来源 $source" +
                     " · 列表 ${chapterRows.size} 行（体检 ${auditRows.size} / 缓存 ${cachedChapters.size}）" +
                     "，正在刷：${current.ifBlank { "—" }}",
-                chapterRows.isNotEmpty()
+                chapterRows.isNotEmpty() && fromAudit
             )
             if (chapterRows.isEmpty()) {
                 LogStore.add("[课程页] 章节列表是空的：体检结果里有这门课的章节行吗？课程 id=${c.courseId}", false)
             }
-            if (!fromAudit) {
-                if (auditRows.isNotEmpty() && !rowsTrusted) {
+            if (fromAudit) {
+                badRowsRounds.remove(c.key)
+                versionAlarmed.remove(c.key)
+            } else {
+                // 「没查到」最多容忍一轮：连续两轮还不可信才告警，且每次进入只告一次
+                val rounds = (badRowsRounds[c.key] ?: 0) + 1
+                badRowsRounds[c.key] = rounds
+                if (rounds >= 2 && versionAlarmed.add(c.key)) {
                     LogStore.add(
-                        "[课程页] 体检行是旧版图标口径（v${audit?.rowsVersion ?: 0}），已忽略；下一轮体检后刷新成任务点口径",
+                        "[课程页] 体检行版本异常：存的 v$storedVersion / 期望 v${CourseAudit.ROWS_VERSION}" +
+                            "（连续 $rounds 轮没拿到可用行）",
                         false
                     )
                 } else {
-                    LogStore.add("[课程页] 这门课还没有体检行，行状态只能用缓存（没明细，一律「没查到」）", false)
+                    LogStore.add("[课程页] 这轮还没拿到可用体检行，先显示「没查到」（下一轮体检刷新）", false)
                 }
             }
         }
@@ -208,5 +221,11 @@ class CourseActivity : AppCompatActivity() {
 
     companion object {
         const val EXTRA_COURSE_KEY = "course_key"
+
+        /** 连续几轮拿不到可用体检行（进程内计数，重启归零） */
+        private val badRowsRounds = mutableMapOf<String, Int>()
+
+        /** 版本异常只告一次，不刷屏 */
+        private val versionAlarmed = mutableSetOf<String>()
     }
 }

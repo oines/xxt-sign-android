@@ -246,6 +246,13 @@ object CourseRunQueue {
                 needsYou = humanText(audit.audit)
             )
         }
+        // 体检完立刻落盘：课程页/首页不等整轮跑完就能拿到这一轮的行和任务点数
+        // （真机上出现过「页面 210/392、行却是上一轮的 v0」——只因为写到盘的时候已经晚了）
+        runCatching {
+            val mergedNow = CourseAuditStore.load(accountId)
+                .filterNot { it.courseId == course.courseId } + audit.audit
+            CourseAuditStore.save(accountId, mergedNow)
+        }
 
         // 2) 文档任务点：目标带着 jtoken 直接从体检结果来，不再翻一遍 cards 页
         if (Settings.studyDocuments) {
