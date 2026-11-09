@@ -276,8 +276,12 @@ object CourseRunQueue {
                 concurrency = Settings.studyConcurrency,
                 speed = Settings.studySpeed
             )
+            StudyManager.chapterProgress = { key, title, done, total ->
+                if (key == course.key) updateChapterRow(accountId, course, title, done, total)
+            }
             StudyManager.start()
-            waitForVideo(key, course)
+            waitForVideo(key, course, accountId)
+            StudyManager.chapterProgress = null
         } else {
             LogStore.add("[课程] ${course.title}：没有待刷视频，跳过", true)
         }
@@ -421,17 +425,20 @@ object CourseRunQueue {
     }
 
     /** 视频阶段：不轮询等待空转，只做心跳，同时保证编解码器停了能自己退出 */
-    private suspend fun waitForVideo(key: String, course: StudyCourse) {
+    private suspend fun waitForVideo(key: String, course: StudyCourse, accountId: String) {
         var lastLog = 0L
         while (StudyManager.isRunning()) {
             val st = StudyManager.state.value
             // StudyState.current 是「课程 · 章名」，拆出章名给逐章列表高亮用
             val chapterTitle = st.current.removePrefix("${course.title} · ").takeIf { it != st.current }.orEmpty()
-            // 章节数没算出来之前不显示 0/0（真机上先闪「0/0」再变「14/90」，看着像坏了）
-            val head = if (st.totalChapters <= 0) {
-                "正在刷视频 · 正在数章节"
-            } else {
-                "正在刷视频 ${st.doneChapters}/${st.totalChapters}"
+            // 分子用「已完成章数」，不是本轮累计：重启后也对得上（逐章行是落盘的）
+            val snapshot = CourseAuditStore.load(accountId).firstOrNull { it.courseId == course.courseId }
+            val doneChapters = snapshot?.chapterRows
+                ?.count { it.stateByTaskPoints() == ChapterRow.State.DONE } ?: 0
+            val totalChapters = snapshot?.chapterRows?.size ?: 0
+            val head = when {
+                totalChapters <= 0 -> "正在刷视频 · 正在数章节"
+                else -> "正在刷视频 · 已完成 $doneChapters/$totalChapters 章"
             }
             val now = System.currentTimeMillis()
             update(key) {
@@ -439,8 +446,10 @@ object CourseRunQueue {
                     phase = Phase.VIDEO,
                     message = listOf(head, chapterTitle).filter { s -> s.isNotBlank() }.joinToString(" · "),
                     currentChapter = chapterTitle,
-                    chapterIndex = st.doneChapters,
-                    chapterCount = st.totalChapters
+                    chapterIndex = doneChapters,
+                    chapterCount = totalChapters,
+                    donePoints = snapshot?.doneTaskPoints ?: it.donePoints,
+                    totalPoints = snapshot?.taskPoints ?: it.totalPoints
                 )
             }
             if (now - lastLog > 120_000) {
@@ -451,6 +460,26 @@ object CourseRunQueue {
         }
         val st = StudyManager.state.value
         LogStore.add("[课程] 视频阶段结束：${st.status}（${st.doneChapters}/${st.totalChapters} 章）", st.failedTasks == 0)
+    }
+
+    /** 视频阶段结束 */
+    /**
+     * 逐章视频进度回写：把 StudyEngine 刚解析出的这一章 done/total 写进已落盘的体检行。
+     * 不新增任何请求，纯落盘——课程页下一次渲染就能看到这章变绿。
+     */
+    private fun updateChapterRow(
+        accountId: String,
+        course: StudyCourse,
+        chapterTitle: String,
+        done: Int,
+        total: Int
+    ) {
+        if (chapterTitle.isBlank()) return
+        val audits = CourseAuditStore.load(accountId)
+        val audit = audits.firstOrNull { it.courseId == course.courseId } ?: return
+        val updated = audit.withChapterVideoProgress(chapterTitle, done, total) ?: return
+        CourseAuditStore.save(accountId, audits.filterNot { it.courseId == course.courseId } + updated)
+        update(course.key) { it.copy(donePoints = updated.doneTaskPoints, totalPoints = updated.taskPoints) }
     }
 
     private suspend fun runQuiz(

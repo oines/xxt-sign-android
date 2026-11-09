@@ -131,6 +131,36 @@ fun ChapterRow.stateByTaskPoints(): ChapterRow.State = when {
     else -> ChapterRow.State.UNCHECKED
 }
 
+/**
+ * 视频阶段逐章回写：把这一章的视频 done/total 写进体检行。
+ *
+ * 为什么需要它：体检只跑一次，而视频是一章一章刷的；用户要看的是「刷到哪、哪章绿」。
+ * 返回 null 表示没变化（或没有这一行），调用方可以省掉一次落盘。
+ */
+fun CourseAudit.withChapterVideoProgress(
+    chapterTitle: String,
+    done: Int,
+    total: Int
+): CourseAudit? {
+    val index = chapterRows.indexOfFirst { it.title == chapterTitle }
+    if (index < 0) return null
+    val old = chapterRows[index]
+    val safeTotal = if (total > 0) total else done
+    val safeDone = done.coerceIn(0, maxOf(safeTotal, 0))
+    if (old.total == safeTotal && old.done == safeDone) return null
+
+    val rows = chapterRows.toMutableList()
+    rows[index] = old.copy(
+        done = safeDone,
+        total = safeTotal,
+        videoDone = safeDone,
+        videoTasks = safeTotal
+    )
+    var donePoints = (doneTaskPoints + (safeDone - old.done)).coerceAtLeast(0)
+    if (taskPoints > 0) donePoints = donePoints.coerceAtMost(taskPoints)
+    return copy(chapterRows = rows, doneTaskPoints = donePoints, rowsVersion = CourseAudit.ROWS_VERSION)
+}
+
 /** 单章的检查输入：这章的任务点检查结果 */
 data class ChapterAuditInput(
     val chapterTitle: String,

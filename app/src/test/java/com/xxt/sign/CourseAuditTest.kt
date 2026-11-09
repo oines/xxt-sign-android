@@ -6,9 +6,11 @@ import com.xxt.sign.study.CardTask
 import com.xxt.sign.study.CourseAuditCalculator
 import com.xxt.sign.study.summarizeChapter
 import com.xxt.sign.study.stateByTaskPoints
+import com.xxt.sign.study.withChapterVideoProgress
 import com.xxt.sign.study.withPlatformTotals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -222,6 +224,37 @@ class CourseAuditTest {
         assertEquals(ChapterRow.State.UNCHECKED, row(0, 0, ChapterRow.State.TODO).stateByTaskPoints())
         // 未开放原样保留
         assertEquals(ChapterRow.State.LOCKED, row(0, 0, ChapterRow.State.LOCKED).stateByTaskPoints())
+    }
+
+    /** 视频阶段逐章回写：刷完一章就该变绿，doneTaskPoints 跟着涨 */
+    @Test
+    fun chapterVideoProgressUpdatesRowAndTotals() {
+        val a = CourseAuditCalculator.audit(
+            "c1", "体育",
+            listOf(
+                input("2.1 什么是健康?", video("v1", false), video("v2", false)),
+                input("4.4.1 运球", video("v3", true))
+            )
+        )
+        val before = a.doneTaskPoints
+
+        // 体检已经算出 2 个视频、0 完成 → 解析阶段同值的回写是 no-op
+        assertNull(a.withChapterVideoProgress("2.1 什么是健康?", done = 0, total = 2))
+
+        // 刷完一个 → 部分完成
+        val step1 = a.withChapterVideoProgress("2.1 什么是健康?", done = 1, total = 2)!!
+        assertEquals(ChapterRow.State.PARTIAL, step1.chapterRows[0].stateByTaskPoints())
+        assertEquals(1, step1.chapterRows[0].videoDone)
+
+        // 刷完两个 → 已完成，doneTaskPoints 跟着 +2
+        val step2 = step1.withChapterVideoProgress("2.1 什么是健康?", done = 2, total = 2)!!
+        assertEquals(ChapterRow.State.DONE, step2.chapterRows[0].stateByTaskPoints())
+        assertEquals(before + 2, step2.doneTaskPoints)
+
+        // 没变化就不返回新对象（避免无意义落盘）
+        assertNull(step2.withChapterVideoProgress("2.1 什么是健康?", done = 2, total = 2))
+        // 没有这一章也返回 null
+        assertNull(step2.withChapterVideoProgress("不存在", done = 1, total = 1))
     }
 
     @Test

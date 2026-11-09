@@ -157,6 +157,8 @@ class StudyEngine(
         )
         val jobs = api.getVideoJobs(course, chapter)
         if (jobs.notOpen) return ChapterOutcome.NOT_OPEN
+        // 逐章回写：课程页不用等整轮体检，刷到哪章哪章就变绿
+        reportChapter(course, chapter, jobs.videoDone, jobs.videoTotal)
         if (jobs.jobs.isEmpty()) {
             // 两种情况必须分开打，否则真机上根本看不出是「做完了」还是「解析没找到」
             val reason = when {
@@ -175,6 +177,7 @@ class StudyEngine(
         )
 
         var allOk = true
+        var finishedHere = 0
         videoLoop@ for ((index, job) in jobs.jobs.withIndex()) {
             currentCoroutineContext().ensureActive()
             LogStore.add(
@@ -218,6 +221,9 @@ class StudyEngine(
                     )
                 )
                 LogStore.add("[刷课] 视频完成：${job.name}" + if (message != "完成") "（$message）" else "", true)
+                finishedHere++
+                // 每刷完一个视频回写一次：列表里这一章跟着变绿
+                reportChapter(course, chapter, jobs.videoDone + finishedHere, jobs.videoTotal)
             } else {
                 allOk = false
                 onTask(
@@ -236,6 +242,12 @@ class StudyEngine(
             }
         }
         return if (allOk) ChapterOutcome.DONE else ChapterOutcome.ERROR
+    }
+
+    /** 把这一章的视频进度回报给课程页（没人监听就算了） */
+    private fun reportChapter(course: StudyCourse, chapter: StudyChapter, done: Int, total: Int) {
+        val listener = StudyManager.chapterProgress ?: return
+        runCatching { listener(course.key, chapter.title, done.coerceAtLeast(0), total.coerceAtLeast(0)) }
     }
 
     private suspend fun runVideo(

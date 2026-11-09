@@ -130,7 +130,12 @@ class CourseActivity : AppCompatActivity() {
                     title = r.title,
                     done = r.done,
                     total = r.total,
-                    state = r.stateByTaskPoints(),
+                    // 体检过但这一行没明细：显示「未开始」而不是满屏「没查到」
+                    state = if (r.total == 0 && r.state == ChapterRow.State.UNCHECKED) {
+                        ChapterRow.State.TODO
+                    } else {
+                        r.stateByTaskPoints()
+                    },
                     running = runningNow && r.title == current,
                     videoDone = r.videoDone,
                     videoTasks = r.videoTasks

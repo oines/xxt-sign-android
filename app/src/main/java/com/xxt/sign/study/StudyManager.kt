@@ -29,6 +29,13 @@ object StudyManager {
     /** 由 UI 在启动前写入 */
     var plan: StudyPlan? = null
 
+    /**
+     * 逐章视频进度回传：课程页拿到就立刻回写逐章行（刷到哪、哪章绿）。
+     * 参数：courseKey、章名、该章已完成视频数、该章视频总数。
+     */
+    @Volatile
+    var chapterProgress: ((String, String, Int, Int) -> Unit)? = null
+
     private var scope: CoroutineScope? = null
     private var job: Job? = null
 
