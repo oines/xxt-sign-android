@@ -11,7 +11,8 @@ import org.jsoup.nodes.Element
  *  - 题量在 `<div class="ceyan_name">`，文本形如「题量: 10」
  *  - 每道题是一个 `<div class="singleQuesId" id="question<qid>">`，**类名全都一样**
  *  - 真实题型在 `input#answertype<qid>` 的 value：0 单选 / 1 多选 / 2 填空 / 3 判断 / 4 简答
- *  - 选项是 `<span class="num_option" data="A|true|false">`，判断题的 data 第一段是 true/false
+ *  - 选项是 `<span class="num_option" data="A|true|false">`（多选版本用 `num_option_dx`，
+ *    同一份页面里两种类名会同时出现，所以两个都要收）
  *  - 字体反解用的 TTF 内嵌在 `style#cxSecretStyle` 的 `@font-face{src:url(data:font/ttf;base64,...)}`
  *
  * 全部是纯字符串/JSoup 处理，不碰网络，单测可直接喂 HTML。
@@ -27,14 +28,17 @@ object WorkParser {
             ?: doc.selectFirst("title")?.text()?.trim().orEmpty()
 
         val questions = doc.select("div.singleQuesId").mapNotNull { parseQuestion(it) }
+        val formFields = parseFormFields(doc)
 
         return WorkPage(
             title = title.ifBlank { "章节测验" },
             questionCount = parseQuestionCount(doc) ?: questions.size,
             questions = questions,
-            formFields = parseFormFields(doc),
+            formFields = formFields,
             submitted = isSubmittedPage(html, questions.size),
-            fontBase64 = parseFontBase64(html)
+            fontBase64 = parseFontBase64(html),
+            formAction = parseFormAction(doc),
+            blankFields = parseBlankFields(formFields, questions.map { it.qid })
         )
     }
 
@@ -51,7 +55,7 @@ object WorkParser {
      */
     fun isSubmittedPage(html: String, questionCount: Int): Boolean {
         if (questionCount > 0) return false
-        val hints = listOf("已交卷", "查看详情", "查看已做答", "本次得分", "成绩详情", "record-list")
+        val hints = listOf("已交卷", "查看详情", "查看已做答", "本次得分", "成绩详情", "record-list", "次作答")
         return hints.any { html.contains(it) }
     }
 
@@ -62,35 +66,46 @@ object WorkParser {
             ?: block.selectFirst("input[name=answertype$qid]")?.attr("value")?.toIntOrNull()
             ?: WorkQuestion.TYPE_SINGLE
 
-        val options = block.select("span.num_option").mapNotNull { span ->
+        // 单选/判断用 num_option，多选用 num_option_dx；同一份卷子里两种都有
+        val spans = (block.select("span.num_option") + block.select("span.num_option_dx")).distinct()
+        val options = spans.mapNotNull { span ->
             val key = span.attr("data").split('|').firstOrNull()?.trim().orEmpty()
             if (key.isBlank()) return@mapNotNull null
             WorkOption(key = key, text = span.text().trim())
-        }
+        }.distinctBy { it.key }
 
         // 题干：复制一份，把选项/表单控件全部剔掉再取文本，避免把选项拼进题干
         val clone = block.clone()
-        clone.select("span.num_option, input, textarea, select, script, style").remove()
+        clone.select("span.num_option, span.num_option_dx, input, textarea, select, script, style").remove()
         val stem = clone.text().trim()
 
         return WorkQuestion(qid = qid, type = type, stem = stem, options = options)
     }
 
+    /** 提交用的 form（新版 mooc2 是 `#form1`，老版是 `#submitForm`） */
+    private fun findForm(doc: Document): Element? = doc.select("form").firstOrNull { f ->
+        f.attr("action").contains("addStudentWorkNew") ||
+            f.selectFirst("div.singleQuesId") != null
+    } ?: doc.selectFirst("form")
+
+    /** form 的 action 原文：带 token / totalQuestionNum / workid 这些 query，提交时优先用它 */
+    fun parseFormAction(doc: Document): String =
+        findForm(doc)?.attr("action")?.trim().orEmpty()
+
     /**
-     * 提交时要原样带回的表单字段：页面 form 里 name **不以 answer 开头**的控件。
-     * 包括隐藏域（workAnswerId、enc、cpi、ktoken……）。
+     * 提交时要原样带回的表单字段：页面 form 里**所有** name 非空的控件。
+     *
+     * 这里绝对不能按 `answer` 前缀过滤：`answerId`、`answertype<qid>`、
+     * `answer<qid>`、`answerEditor<qid><空号>` 都是服务端点数用的，
+     * 少一个就回「无效的提交，参数异常！」或「无效的参数：code-2！」（真机已复现）。
      */
     fun parseFormFields(doc: Document): Map<String, String> {
-        val form = doc.select("form").firstOrNull { f ->
-            f.attr("action").contains("addStudentWorkNew") ||
-                f.selectFirst("div.singleQuesId") != null
-        } ?: doc.selectFirst("form")
-
+        val form = findForm(doc)
         val out = LinkedHashMap<String, String>()
         val scope: Element = form ?: doc.body() ?: doc
         scope.select("input[name], textarea[name], select[name]").forEach { el ->
             val name = el.attr("name").trim()
-            if (name.isBlank() || name.startsWith("answer")) return@forEach
+            if (name.isBlank()) return@forEach
             when (el.tagName()) {
                 "select" -> {
                     val opt = el.selectFirst("option[selected]") ?: el.selectFirst("option")
@@ -105,6 +120,26 @@ object WorkParser {
             }
         }
         return out
+    }
+
+    /**
+     * 填空题的空位字段：实测没有 `answer<qid>`，只有 `answerEditor<qid><空号>`
+     * （例：`answerEditor4047582721` = 题 404758272 的第 1 空）。
+     * 按已解析出的 qid 做最长前缀匹配，避免把 9 位 qid 和空号粘错。
+     */
+    fun parseBlankFields(fields: Map<String, String>, qids: List<String>): Map<String, List<String>> {
+        if (qids.isEmpty()) return emptyMap()
+        val out = LinkedHashMap<String, MutableList<String>>()
+        fields.keys.asSequence()
+            .filter { it.startsWith("answerEditor") }
+            .forEach { name ->
+                val qid = qids.filter { name.startsWith("answerEditor$it") }.maxByOrNull { it.length }
+                    ?: return@forEach
+                out.getOrPut(qid) { mutableListOf() }.add(name)
+            }
+        return out.mapValues { (qid, names) ->
+            names.sortedBy { name -> name.removePrefix("answerEditor$qid").toIntOrNull() ?: 0 }
+        }
     }
 
     /**
@@ -129,7 +164,7 @@ object WorkParser {
     }
 }
 
-/** 成绩回查（record-list）的宽松解析结果 */
+/** 成绩回查的解析结果 */
 data class RecordSummary(val times: Int, val score: String) {
     val seen: Boolean get() = times > 0
 }
@@ -137,21 +172,30 @@ data class RecordSummary(val times: Int, val score: String) {
 /**
  * record 页解析。
  *
- * 只保证「交了几次 + 分数」这两个通用信息；逐题对错的页面结构随版本变化大，
- * 这里只做宽松匹配，解析不到就返回空列表，不影响主流程。
+ * 章测的回查页是 `selectWorkQuestionYiPiYue`（交卷后再拉一次卷子就会 302 过去）：
+ *   `<span class="ans_number">第1次作答</span>`
+ *   `<span class="achievement">本次成绩<i>80</i>分</span>`
+ * `/mooc-ans/work/record-list` 对章测是死的（实测回「此作业已被删除」），不走它。
  */
 object RecordParser {
 
     fun parseList(html: String): RecordSummary {
-        val times = Regex("times=(\\d+)").findAll(html)
+        val times = Regex("第\\s*(\\d+)\\s*次作答").findAll(html)
             .mapNotNull { it.groupValues.getOrNull(1)?.toIntOrNull() }
             .maxOrNull()
+            ?: Regex("times=(\\d+)").findAll(html)
+                .mapNotNull { it.groupValues.getOrNull(1)?.toIntOrNull() }
+                .maxOrNull()
             ?: Regex("第\\s*(\\d+)\\s*次").findAll(html)
                 .mapNotNull { it.groupValues.getOrNull(1)?.toIntOrNull() }
                 .maxOrNull()
             ?: 0
 
-        val score = Regex("(\\d+(?:\\.\\d+)?)\\s*分").find(html)?.groupValues?.getOrNull(1).orEmpty()
+        val score = Regex("class=\"achievement\"[^>]*>[\\s\\S]{0,40}?<i[^>]*>(\\d+(?:\\.\\d+)?)</i>")
+            .find(html)?.groupValues?.getOrNull(1)
+            ?: Regex("本次成绩[\\s\\S]{0,80}?(\\d+(?:\\.\\d+)?)\\s*分")
+                .find(html)?.groupValues?.getOrNull(1)
+            ?: Regex("(\\d+(?:\\.\\d+)?)\\s*分").find(html)?.groupValues?.getOrNull(1).orEmpty()
         return RecordSummary(times = times, score = score)
     }
 

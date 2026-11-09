@@ -54,6 +54,10 @@ data class WorkQuestion(
     val isBlank: Boolean get() = type == TYPE_BLANK
     val isJudge: Boolean get() = type == TYPE_JUDGE
 
+    /** 填空/简答这类写富文本的题：答案进 answerEditor<qid><空号>，不是 answer<qid> */
+    val isRichText: Boolean
+        get() = type in setOf(TYPE_BLANK, 5, 6, 7, 8, 9, 10)
+
     companion object {
         const val TYPE_SINGLE = 0
         const val TYPE_MULTI = 1
@@ -77,12 +81,22 @@ data class WorkPage(
     val title: String,
     val questionCount: Int,
     val questions: List<WorkQuestion>,
-    /** form 里 name 不以 answer 开头的字段，提交时原样带回 */
+    /**
+     * 页面 form 里**所有**有 name 的控件的原值（含 answer<qid> / answertype<qid> /
+     * answerEditor<qid><空号> / answerId / answerwqbid / pyFlag …）。
+     *
+     * 提交时必须原样全带：实测少一个字段服务端就回「无效的提交，参数异常！」
+     * 或「无效的参数：code-2！」——它按 answerwqbid 里的 qid 逐个点数。
+     */
     val formFields: Map<String, String>,
     /** 已交卷（服务端直接给了 record 页） */
     val submitted: Boolean,
     /** style#cxSecretStyle 里内嵌的 TTF（base64），没有就是明文 */
-    val fontBase64: String?
+    val fontBase64: String?,
+    /** form 的 action 原文（可能带 token/totalQuestionNum/workid 等 query），空 = 没解析到 */
+    val formAction: String = "",
+    /** 填空题：qid -> 该题的空位字段名（answerEditor<qid><空号>，实测没有 answer<qid>） */
+    val blankFields: Map<String, List<String>> = emptyMap()
 )
 
 /** 一次答题的答案 */
