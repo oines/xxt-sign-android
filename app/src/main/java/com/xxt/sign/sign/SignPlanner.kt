@@ -55,11 +55,9 @@ object SignPlanner {
                 otherId == CxApi.TYPE_GESTURE || otherId == CxApi.TYPE_CODE ->
                     if (serverSignCode.isBlank()) Requirement.SIGN_CODE else Requirement.NONE
 
-                otherId == CxApi.TYPE_LOCATION -> {
-                    val lat = Settings.latitude.ifBlank { Settings.lastGoodLat }
-                    val lon = Settings.longitude.ifBlank { Settings.lastGoodLon }
-                    if (lat.isBlank() || lon.isBlank()) Requirement.LOCATION else Requirement.NONE
-                }
+                otherId == CxApi.TYPE_LOCATION ->
+                    if (Settings.latitude.isBlank() || Settings.longitude.isBlank())
+                        Requirement.LOCATION else Requirement.NONE
 
                 ifPhoto == 1 && Settings.photoPath.isBlank() -> Requirement.PHOTO
 

@@ -25,11 +25,7 @@ class StudyEngine(
     private val api: StudyApi,
     private val plan: StudyPlan,
     private val onState: (StudyState) -> Unit,
-    private val onTask: (StudyTaskItem) -> Unit,
-    /** 每个视频一个弹题桥；没抓包/没配置时返回 [PopQuizBridge.NONE] */
-    private val popQuizBridge: (StudyCourse, VideoJob) -> PopQuizBridge = { _, _ -> PopQuizBridge.NONE },
-    /** 弹题作答：复用章节测验那条「题库优先 + 大模型兜底」链路 */
-    private val popQuizSolver: suspend (PopQuizQuestion) -> String = { "" }
+    private val onTask: (StudyTaskItem) -> Unit
 ) {
     private val done = AtomicInteger(0)
     private val failed = AtomicInteger(0)
@@ -69,16 +65,7 @@ class StudyEngine(
         )
         if (targets.isEmpty()) return StudySummary(0, 0)
 
-        // 风控硬约束：视频必须一路一路播。
-        // 原来的 Semaphore(plan.concurrency) 是每次 run 新建的局部量，设置填 3 就是三路齐播；
-        // 现在章节级也是 1，视频真的开播还会再过 [VideoGate]（进程级互斥，重试也算）。
-        val semaphore = Semaphore(1)
-        if (plan.concurrency > 1) {
-            LogStore.add(
-                "[刷课] 并发设置是 ${plan.concurrency}，但视频播放固定为 1 路（风控），其余排队",
-                true
-            )
-        }
+        val semaphore = Semaphore(plan.concurrency.coerceIn(1, 8))
         coroutineScope {
             targets.map { (course, chapter) ->
                 async(Dispatchers.IO) {
@@ -157,28 +144,13 @@ class StudyEngine(
         )
         val jobs = api.getVideoJobs(course, chapter)
         if (jobs.notOpen) return ChapterOutcome.NOT_OPEN
-        // 逐章回写：课程页不用等整轮体检，刷到哪章哪章就变绿
-        reportChapter(course, chapter, jobs.videoDone, jobs.videoTotal)
         if (jobs.jobs.isEmpty()) {
-            // 两种情况必须分开打，否则真机上根本看不出是「做完了」还是「解析没找到」
-            val reason = when {
-                jobs.videoTotal == 0 -> "解析没找到视频（这一章没有 video 附件）"
-                jobs.videoDone >= jobs.videoTotal -> "已完成的跳过（${jobs.videoTotal} 个视频全部 isPassed）"
-                else -> "解析没找到视频（共 ${jobs.videoTotal} 个 video 附件，已完成 ${jobs.videoDone}，" +
-                    "其余解析不出 jobid/objectId，疑似缺字段）"
-            }
-            LogStore.add("[刷课] ${course.title} · ${chapter.title}：$reason", jobs.videoDone >= jobs.videoTotal)
+            LogStore.add("[刷课] ${course.title} · ${chapter.title} 无视频任务", true)
             return ChapterOutcome.DONE
         }
-        LogStore.add(
-            "[刷课] ${course.title} · ${chapter.title}：待刷 ${jobs.jobs.size} 个视频" +
-                "（共 ${jobs.videoTotal}，已完成 ${jobs.videoDone}）",
-            true
-        )
 
         var allOk = true
-        var finishedHere = 0
-        videoLoop@ for ((index, job) in jobs.jobs.withIndex()) {
+        jobs.jobs.forEachIndexed { index, job ->
             currentCoroutineContext().ensureActive()
             LogStore.add(
                 "[刷课] ${course.title} · ${chapter.title} · ${job.name}" +
@@ -196,58 +168,39 @@ class StudyEngine(
             onTask(base.copy(status = StudyTaskStatus.RUNNING, message = "准备中"))
 
             var lastProgress = 0
-            // 全局闸门：同一时刻只允许一路视频在播（含重试）
-            val result = VideoGate.run {
-                runVideo(course, job) { pct, msg ->
-                    lastProgress = pct
-                    onTask(
-                        base.copy(
-                            status = StudyTaskStatus.RUNNING,
-                            progress = pct,
-                            message = msg
-                        )
+            val result = runVideo(course, job) { pct, msg ->
+                lastProgress = pct
+                onTask(
+                    base.copy(
+                        status = StudyTaskStatus.RUNNING,
+                        progress = pct,
+                        message = msg
                     )
-                }
+                )
             }
 
-            // 弹题统计要进任务卡片和日志：视频中途弹题 2 道，答上 1 道
-            val message = result.messageWithPop()
             if (result.ok) {
                 onTask(
                     base.copy(
                         status = StudyTaskStatus.DONE,
                         progress = 100,
-                        message = message
+                        message = result.message
                     )
                 )
-                LogStore.add("[刷课] 视频完成：${job.name}" + if (message != "完成") "（$message）" else "", true)
-                finishedHere++
-                // 每刷完一个视频回写一次：列表里这一章跟着变绿
-                reportChapter(course, chapter, jobs.videoDone + finishedHere, jobs.videoTotal)
+                LogStore.add("[刷课] 视频完成：${job.name}", true)
             } else {
                 allOk = false
                 onTask(
                     base.copy(
                         status = StudyTaskStatus.FAILED,
                         progress = maxOf(lastProgress, result.progress),
-                        message = message
+                        message = result.message
                     )
                 )
-                LogStore.add("[刷课] 视频未完成：${job.name}（$message）", false)
-                // 卡在弹题 = 需要本人，不是普通失败；别让它在重试里空转
-                if (result.needsHuman) {
-                    LogStore.add("[刷课] ${job.name}：这道弹题没答上，视频可能停在这里，已跳过", false)
-                    break@videoLoop
-                }
+                LogStore.add("[刷课] 视频未完成：${job.name}（${result.message}）", false)
             }
         }
         return if (allOk) ChapterOutcome.DONE else ChapterOutcome.ERROR
-    }
-
-    /** 把这一章的视频进度回报给课程页（没人监听就算了） */
-    private fun reportChapter(course: StudyCourse, chapter: StudyChapter, done: Int, total: Int) {
-        val listener = StudyManager.chapterProgress ?: return
-        runCatching { listener(course.key, chapter.title, done.coerceAtLeast(0), total.coerceAtLeast(0)) }
     }
 
     private suspend fun runVideo(
@@ -298,29 +251,6 @@ class StudyEngine(
         var endNotified = false
         var endStartedAt = 0L
 
-        // ---------------- 视频中途弹题 ----------------
-        // 学习通会在播放到某个点弹题，答不对视频不往下播。这里每 10 秒问一次接口，
-        // 解出来就答；答不上/没接口就让播放进度自己说话（连续不动 = 卡住了）。
-        val bridge = popQuizBridge(course, job)
-        var popTotal = 0
-        var popAnswered = 0
-        var popTimedOut = false
-        var popGaveUp: String? = null
-        var lastPollAt = 0L
-        var lastPlayTimeSeen = playTime
-        var stallRounds = 0
-        var quizDeadline = 0L
-        var resumedAfterStall = false
-
-        fun popResult() = PopQuizResult(
-            total = popTotal,
-            answered = popAnswered,
-            skipped = popTotal - popAnswered,
-            timedOut = popTimedOut,
-            needsHuman = popGaveUp != null,
-            attempts = emptyList()
-        )
-
         while (currentCoroutineContext().isActive) {
             val now = System.currentTimeMillis()
 
@@ -347,12 +277,7 @@ class StudyEngine(
                 when {
                     r.passed -> {
                         onProgress(100, "完成")
-                        return VideoRunResult(
-                            ok = true,
-                            progress = 100,
-                            message = "完成",
-                            popQuiz = popResult()
-                        )
+                        return VideoRunResult(true, 100, "完成")
                     }
 
                     r.code == 403 -> {
@@ -424,114 +349,6 @@ class StudyEngine(
                 lastTick = tickNow
                 emitProgress()
             }
-
-            // ---- 弹题轮询 ----
-            // 客户端进度已经到底时不数「不动」轮数：那是在等服务端确认，不是卡住也不是弹题
-            if (playTime >= duration) {
-                stallRounds = 0
-                lastPlayTimeSeen = playTime
-            }
-            if (tickNow - lastPollAt >= POP_POLL_INTERVAL_MS && playTime < duration) {
-                lastPollAt = tickNow
-                if (playTime > lastPlayTimeSeen) {
-                    lastPlayTimeSeen = playTime
-                    stallRounds = 0
-                } else {
-                    stallRounds++
-                }
-
-                val questions = if (bridge.configured) {
-                    runCatching { bridge.poll(job, playTime) }.getOrDefault(emptyList())
-                } else {
-                    emptyList()
-                }
-
-                if (questions.isEmpty()) {
-                    val outcome = PopQuizPolicy.decide(
-                        bridge, emptyList(), emptyList(), timedOut = false, stalledRounds = stallRounds
-                    )
-                    // 进度不动 ≠ 弹题：先续播一次，还不动就当普通失败退出去重试
-                    (outcome.decision as? PopQuizDecision.Stalled)?.let { stalled ->
-                        if (!resumedAfterStall) {
-                            resumedAfterStall = true
-                            LogStore.add("[刷课] ${job.name}：${stalled.reason}，续播一次", false)
-                            val fresh = try {
-                                api.videoStatus(job.objectId)
-                            } catch (e: CancellationException) {
-                                throw e
-                            } catch (e: Exception) {
-                                LogStore.add("[刷课] ${job.name}：取播放状态失败 ${e.message}", false)
-                                null
-                            }
-                            if (fresh != null) {
-                                status = fresh
-                                duration = maxOf(duration, fresh.duration)
-                            }
-                            // 等于“点一下播放”：补一次进度上报
-                            val resumed = logWithRtFallback(
-                                course, job, status, playTime, duration, 3, chosenRt, rtCandidates
-                            )
-                            if (resumed.passed) {
-                                onProgress(100, "完成")
-                                return VideoRunResult(
-                                    ok = true, progress = 100, message = "完成", popQuiz = popResult()
-                                )
-                            }
-                            stallRounds = 0
-                            lastPlayTimeSeen = playTime
-                        } else {
-                            LogStore.add("[刷课] ${job.name}：${stalled.reason}，续播也没动，退出重试", false)
-                            return VideoRunResult(
-                                ok = false,
-                                progress = lastPercent.coerceAtLeast(0),
-                                message = "播放卡住，重试",
-                                needsHuman = false,
-                                popQuiz = popResult()
-                            )
-                        }
-                    }
-                } else {
-                    if (quizDeadline == 0L) quizDeadline = tickNow + POP_QUIZ_TIMEOUT_MS
-                    val answers = questions.map { q ->
-                        val left = quizDeadline - System.currentTimeMillis()
-                        val ans = if (left > 0) {
-                            kotlinx.coroutines.withTimeoutOrNull(left) { popQuizSolver(q) } ?: ""
-                        } else ""
-                        if (ans.isNotBlank()) {
-                            runCatching { bridge.submit(job, q, ans) }.getOrDefault(false)
-                            ans
-                        } else ""
-                    }
-                    val fresh = questions.zip(answers).filter { it.second.isNotBlank() }
-                    popTotal += questions.size
-                    popAnswered += fresh.size
-                    val timedOut = tickNow >= quizDeadline
-                    popTimedOut = popTimedOut || timedOut
-
-                    LogStore.add(
-                        "[刷课] ${job.name}：视频中途弹题 ${questions.size} 道，答上 ${fresh.size} 道" +
-                            if (timedOut) "（超时）" else "",
-                        fresh.size == questions.size
-                    )
-
-                    val outcome = PopQuizPolicy.decide(
-                        bridge, questions, answers, timedOut = timedOut, stalledRounds = stallRounds
-                    )
-                    (outcome.decision as? PopQuizDecision.GiveUp)?.let { giveUp ->
-                        popGaveUp = giveUp.reason
-                        LogStore.add("[刷课] ${job.name}：${giveUp.reason}", false)
-                        return VideoRunResult(
-                            ok = false,
-                            progress = lastPercent.coerceAtLeast(0),
-                            message = giveUp.reason,
-                            needsHuman = true,
-                            popQuiz = popResult()
-                        )
-                    }
-                    if (fresh.size == questions.size) quizDeadline = 0L
-                }
-            }
-
             delay(1000)
         }
         return VideoRunResult(false, lastPercent.coerceAtLeast(0), "已取消")
@@ -575,12 +392,6 @@ class StudyEngine(
         private const val MAX_TRIES = 5
         private const val MAX_FORBIDDEN_RETRY = 2
         private const val RETRY_INTERVAL_MS = 1000L
-
-        /** 弹题轮询间隔 */
-        private const val POP_POLL_INTERVAL_MS = 10_000L
-
-        /** 一道弹题最多给多久（答不上就跳过，别把整门课卡死） */
-        private const val POP_QUIZ_TIMEOUT_MS = 60_000L
 
         /** 客户端进度到 100% 后，最多再等服务端确认多久 */
         private const val END_TIMEOUT_MS = 3 * 60 * 1000L

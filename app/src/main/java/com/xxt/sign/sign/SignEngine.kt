@@ -57,23 +57,10 @@ object SignEngine {
         // 在副本上干活：Store 里的实例保持旧值，回写时 StateFlow 才会因为内容变化而发射
         val work = acc.copy()
         val s = CxSession(work)
-        // 会话有效性只看真实请求：账号管理页过了就算过；没过再用业务页探一次
-        // （sms 账号的账号管理页本来就不渲染 messageName，不能拿它当唯一依据）
-        val probeOk = s.hasCookies() && (s.checkSession() || s.probeSession())
-        return when (SessionGate.decide(work.authType, s.hasCookies(), probeOk)) {
-            SessionGate.Action.USE_SESSION -> s to ""
-            SessionGate.Action.PASSWORD_LOGIN -> {
-                val err = s.login()
-                AccountStore.upsert(work)
-                if (err.isEmpty()) s to "" else null to err
-            }
-            SessionGate.Action.GIVE_UP -> {
-                val err = SessionGate.reloginMessage(work.authType)
-                work.lastError = err
-                AccountStore.upsert(work)
-                null to err
-            }
-        }
+        if (s.hasCookies() && s.checkSession()) return s to ""
+        val err = s.login()
+        AccountStore.upsert(work)
+        return if (err.isEmpty()) s to "" else null to err
     }
 
     // -------------------------------------------------------- 活动发现

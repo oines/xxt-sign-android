@@ -1,9 +1,7 @@
 package com.xxt.sign.study
 
 import com.xxt.sign.net.CxSession
-import com.xxt.sign.core.LogStore
 import com.xxt.sign.net.enc
-import com.xxt.sign.work.WorkJob
 import com.xxt.sign.net.get
 import com.xxt.sign.net.postForm
 import kotlinx.coroutines.delay
@@ -11,7 +9,6 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import org.json.JSONObject
 import java.security.MessageDigest
-import java.util.concurrent.TimeUnit
 import kotlin.random.Random
 
 /** 简单的请求限速器：同一账号的请求串行排队，保证最小间隔 + 随机抖动 */
@@ -43,25 +40,10 @@ class SessionExpiredException : Exception("会话已失效，请在账号页重�
  */
 class StudyApi(private val session: CxSession) {
 
-    /** 队列里跑测验要复用同一个会话 */
-    val cx: CxSession get() = session
-
     private val c get() = session.pcClient
     private val limiter = RequestLimiter(500L, 200L)
     private val checkLimiter = RequestLimiter(100L, 50L)
     private val videoLimiter = RequestLimiter(2000L, 2000L)
-
-    /**
-     * 文档完成接口专用的短超时客户端。
-     * 共享客户端的 callTimeout 是 50s，一个卡住的连接能把整段流水分拖垮；
-     * 这里 15s 就丢，调用方再包一层 withTimeoutOrNull 就绝不会无限期挂着。
-     */
-    private val docClient by lazy {
-        c.newBuilder()
-            .callTimeout(15, TimeUnit.SECONDS)
-            .readTimeout(12, TimeUnit.SECONDS)
-            .build()
-    }
 
     /** 有些老账号 uid/fid 只存在于 Cookie 里 */
     private val uid: String
@@ -110,66 +92,20 @@ class StudyApi(private val session: CxSession) {
 
     // ------------------------------------------------------------ 章节
 
-    suspend fun getChapters(course: StudyCourse): List<StudyChapter> = getChapterPage(course).chapters
-
-    /** 章节目录 + 平台自报的「已完成任务点 X/Y」（同一份页面，不额外请求） */
-    data class ChapterPage(val chapters: List<StudyChapter>, val donePoints: Int, val totalPoints: Int)
-
-    /**
-     * 拿章节目录 + 平台口径的任务点。
-     *
-     * 平台统计只存在于 `mooc2-ans.chaoxing.com/mooc2-ans/mycourse/studentcourse`
-     * （四个参数缺一不可）。真机上遇到过页面结构完全正常但数字是 **0/0** 的情况：
-     * 那不是「没完成任务点」，而是这次请求没拿到统计口径，**必须当成没解析到**，
-     * 然后换备用域名再试一次；两次都不行就报 -1，让上层保留自数分母并打日志。
-     */
-    suspend fun getChapterPage(course: StudyCourse): ChapterPage {
-        val urls = ChapterPageUrl.candidates(course)
-        if (!ChapterPageUrl.hasCpi(course)) {
-            LogStore.add(
-                "[体检] ${course.title} 这门课没有 cpi（课程缓存太旧？），平台口径大概率拿不到",
-                false
-            )
-        }
-        var chapters: List<StudyChapter> = emptyList()
-        urls.forEachIndexed { index, url ->
-            limiter.acquire()
-            val r = runCatching { c.get(url) }.getOrNull()
-            if (r == null) {
-                LogStore.add("[体检] 任务点口径第 ${index + 1} 个地址请求失败：$url", false)
-                return@forEachIndexed
-            }
-            checkLogin(r.body)
-            if (chapters.isEmpty()) chapters = StudyParser.parseChapters(r.body)
-            val totals = StudyParser.parseTaskPointTotals(r.body)
-            if (totals != null) {
-                if (index > 0) {
-                    LogStore.add("[体检] 任务点口径：第 ${index + 1} 个地址拿到了 ${totals.first}/${totals.second}", true)
-                }
-                return ChapterPage(chapters, totals.first, totals.second)
-            }
-            // 真机取证：页面里有「已完成任务点」但数字是 0/0，或根本找不到关键字
-            val at = r.body.indexOf("已完成任务点")
-            val snippet = if (at >= 0) {
-                r.body.substring(at, minOf(r.body.length, at + 120)).replace("\n", " ")
-            } else {
-                "页面里没有「已完成任务点」"
-            }
-            LogStore.add(
-                "[体检] 任务点口径第 ${index + 1} 个地址没拿到有效数字（0/0 也算无效）：$url｜$snippet",
-                false
-            )
-        }
-        return ChapterPage(chapters, -1, -1)
+    suspend fun getChapters(course: StudyCourse): List<StudyChapter> {
+        limiter.acquire()
+        val url = "https://mooc2-ans.chaoxing.com/mooc2-ans/mycourse/studentcourse" +
+            "?courseid=${course.courseId}&clazzid=${course.clazzId}" +
+            "&cpi=${enc(course.cpi.ifBlank { "0" })}&ut=s"
+        val r = c.get(url)
+        checkLogin(r.body)
+        return StudyParser.parseChapters(r.body)
     }
 
     // -------------------------------------------------------- 视频任务
 
     suspend fun getVideoJobs(course: StudyCourse, chapter: StudyChapter): ChapterJobs {
         val jobs = LinkedHashMap<String, VideoJob>()
-        val allVideo = LinkedHashSet<String>()
-        val doneVideo = LinkedHashSet<String>()
-        var malformed = 0
         for (num in 0..6) {
             limiter.acquire()
             val r = c.get(
@@ -182,9 +118,6 @@ class StudyApi(private val session: CxSession) {
             val parsed = StudyParser.parseCards(r.body)
             if (parsed.notOpen) return ChapterJobs(true, emptyList())
             parsed.jobs.forEach { jobs[it.jobId] = it }
-            allVideo += parsed.allVideoKeys
-            doneVideo += parsed.doneVideoKeys
-            if (parsed.malformed > malformed) malformed = parsed.malformed
         }
 
         // 没有任务点时访问一次空页面，和网页端行为一致（不计视频任务）
@@ -206,135 +139,17 @@ class StudyApi(private val session: CxSession) {
                 )
             }
         }
-        return ChapterJobs(
-            notOpen = false,
-            jobs = jobs.values.toList(),
-            allVideoKeys = allVideo,
-            doneVideoKeys = doneVideo,
-            malformed = malformed
-        )
+        return ChapterJobs(false, jobs.values.toList())
     }
 
-    /**
-     * 拉一个章节里的测验任务点。
-     * 与视频共用 knowledge/cards 页，只是挑 type == "workid" 的卡片，
-     * 并额外带上 mArg.defaults.ktoken（取题接口要它）。
-     */
-    suspend fun getWorkJobs(course: StudyCourse, chapter: StudyChapter): List<WorkJob> {
-        val out = LinkedHashMap<String, WorkJob>()
-        var ktoken = ""
-        var cpi = course.cpi.ifBlank { "0" }
-        // 一个章节可能有多张卡片：只拉 num=0 会漏一大半。
-        // 退出条件只看「有没有新任务点」（见 [PageSweep]），不能用「这一页是不是空的」。
-        val sweep = PageSweep()
-        var last = 0
-        for (num in 0 until PageSweep.DEFAULT_MAX_PAGES) {
-            limiter.acquire()
-            val r = c.get(cardsUrl(course, chapter, num))
-            checkLogin(r.body)
-            if (r.body.contains("章节未开放")) return emptyList()
-            val parsed = StudyParser.parseWorkCards(r.body)
-            if (parsed.ktoken.isNotBlank()) ktoken = parsed.ktoken
-            if (parsed.cpi.isNotBlank()) cpi = parsed.cpi
-            parsed.jobs.forEach { w ->
-                out[w.jobId] = WorkJob(
-                    courseId = course.courseId,
-                    clazzId = course.clazzId,
-                    cpi = cpi,
-                    chapterId = chapter.id,
-                    chapterTitle = chapter.title,
-                    jobId = w.jobId,
-                    workId = w.workId,
-                    enc = w.enc,
-                    ktoken = ktoken,
-                    name = w.name,
-                    courseTitle = course.title,
-                    module = w.module,
-                    worktype = w.worktype
-                )
-            }
-            val newItems = out.size - last
-            last = out.size
-            if (!sweep.afterNew(newItems)) break
-        }
-        // 只有真的找到测验或撞到上限才写日志，否则 91 章会刷屏
-        if (out.isNotEmpty() || sweep.hitLimit) {
-            LogStore.add(
-                "[刷课] 测验扫描 ${chapter.title}：翻了 ${sweep.pages} 页，找到 ${out.size} 份" +
-                    (if (sweep.hitLimit) "（撞上限，可能还有）" else ""),
-                out.isNotEmpty()
-            )
-        }
-        return out.values.map { if (it.ktoken.isBlank()) it.copy(ktoken = ktoken) else it }
-    }
-
-    private fun cardsUrl(course: StudyCourse, chapter: StudyChapter, num: Int): String =
-        "https://mooc1.chaoxing.com/mooc-ans/knowledge/cards" +
-            "?clazzid=${course.clazzId}&courseid=${course.courseId}" +
-            "&knowledgeid=${chapter.id}&ut=s&cpi=${course.cpi.ifBlank { "0" }}" +
-            "&v=2025-0424-1038-3&mooc2=1&num=$num"
-
-    /**
-     * 文档任务点：GET 一次 `/mooc-ans/job/document` 就算完成，不需要真读。
-     * 参数已用真实接口验证：缺 jtoken 会被回 `illegal params`，
-     * knowledgeid 用 otherInfo 里的 nodeId（拿不到才用章节目录 id）。
-     */
-    suspend fun completeDocument(course: StudyCourse, chapter: StudyChapter, job: DocumentJob): DocumentResult {
-        limiter.acquire()
-        val knowledgeId = job.knowledgeId.ifBlank { chapter.id }
-        val url = "https://mooc1.chaoxing.com/mooc-ans/job/document" +
-            "?jobid=${enc(job.jobId)}" +
-            "&knowledgeid=${enc(knowledgeId)}" +
-            "&courseid=${enc(course.courseId)}" +
-            "&clazzid=${enc(course.clazzId)}" +
-            "&jtoken=${enc(job.jtoken)}" +
-            "&checkMicroTopic=true&microTopicId=&courseEngineInfo=false"
-        val r = docClient.get(url, mapOf("Referer" to CHAPTER_REFERER))
-        checkLogin(r.body)
-        if (!r.ok) {
-            LogStore.add("[刷课] 文档 ${job.name} 完成请求失败 HTTP ${r.code}", false)
-            return DocumentResult.FAILED
-        }
-        val body = r.body
-        return when {
-            body.contains("考核点已经完成") -> DocumentResult.ALREADY
-            Regex("\"status\"\\s*:\\s*true").containsMatchIn(body) -> DocumentResult.DONE
-            body.trim() == "1" || body.trim() == "success" -> DocumentResult.DONE
-            else -> {
-                LogStore.add("[刷课] 文档 ${job.name} 返回：${body.take(120)}", false)
-                DocumentResult.FAILED
-            }
-        }
-    }
-
-    /** 一个章节里的文档任务点（已完成的不会返回，省得白跑接口） */
-    suspend fun getDocumentJobs(course: StudyCourse, chapter: StudyChapter): List<DocumentJob> {
-        val out = LinkedHashMap<String, DocumentJob>()
-        val sweep = PageSweep()
-        var last = 0
-        for (num in 0 until PageSweep.DEFAULT_MAX_PAGES) {
-            limiter.acquire()
-            val r = c.get(cardsUrl(course, chapter, num))
-            checkLogin(r.body)
-            if (r.body.contains("章节未开放")) return emptyList()
-            val jobs = StudyParser.parseDocumentJobs(r.body)
-            jobs.forEach { out[it.jobId] = it }
-            val newItems = out.size - last
-            last = out.size
-            if (!sweep.afterNew(newItems)) break
-        }
-        return out.values.toList()
-    }
-
-    /** 检查一个章节里所有任务点（含视频、章节测验）的完成情况，按类型分开数 */
+    /** 检查一个章节里所有任务点（含视频、章节测验）的完成情况 */
     suspend fun checkChapter(course: StudyCourse, chapter: StudyChapter): ChapterCheck {
         val map = LinkedHashMap<String, CardTask>()
         var notOpen = false
-        val sweep = PageSweep()
-        var last = 0
-        // 不用 jobCount 截断：章节测验/文档可能和视频不在同一张卡片上。
-        // 退出条件看「有没有新任务点」，见 [PageSweep]。
-        for (num in 0 until PageSweep.DEFAULT_MAX_PAGES) {
+        var noNewStreak = 0
+        // 不用 jobCount 截断：章节测验/文档可能和视频不在同一张卡片上，
+        // 固定检查 0..6，连续两次没有新任务点再提前结束。
+        for (num in 0..6) {
             checkLimiter.acquire()
             val r = c.get(
                 "https://mooc1.chaoxing.com/mooc-ans/knowledge/cards" +
@@ -347,17 +162,29 @@ class StudyApi(private val session: CxSession) {
                 notOpen = true
                 break
             }
-            StudyParser.parseCardTasks(r.body).forEach { map[it.key] = it }
-            val newItems = map.size - last
-            last = map.size
-            if (!sweep.afterNew(newItems)) break
+            val tasks = StudyParser.parseCardTasks(r.body)
+            val before = map.size
+            tasks.forEach { map[it.key] = it }
+            if (tasks.isEmpty() || map.size == before) {
+                noNewStreak++
+                if (noNewStreak >= 2) break
+            } else {
+                noNewStreak = 0
+            }
         }
         if (notOpen) return ChapterCheck(0, 0, 0, 0, notOpen = true)
         if (map.isEmpty() && chapter.jobCount > 0) {
-            // 页面没解析出任务但章节标了有任务点：进度未知，标 scanFailed，不要伪造一个任务点
-            return ChapterCheck(1, 0, 1, 0, scanFailed = true)
+            // 页面没解析出任务但章节标了有任务点：按未完成处理，避免误标蓝色
+            return ChapterCheck(1, 0, 1, 0)
         }
-        return summarizeChapter(map.values)
+        val all = map.values
+        return ChapterCheck(
+            allTasks = all.size,
+            allDone = all.count { it.passed },
+            videoTasks = all.count { it.isVideo },
+            videoDone = all.count { it.isVideo && it.passed },
+            doneVideoJobs = all.filter { it.isVideo && it.passed }.map { it.key }.toSet()
+        )
     }
 
     suspend fun videoStatus(objectId: String): VideoStatus? {        limiter.acquire()
@@ -443,11 +270,6 @@ class StudyApi(private val session: CxSession) {
     }
 
     companion object {
-        /** 一个章节最多翻多少张卡片（真机上见过十几张） */
-        private const val MAX_CARD_PAGES = 60
-
-        private const val CHAPTER_REFERER = "https://mooc1.chaoxing.com/mooc-ans/knowledge/cards"
-
         private const val INTERACTION_REFERER =
             "https://mooc2-ans.chaoxing.com/mooc2-ans/visit/interaction" +
                 "?moocDomain=https://mooc1-1.chaoxing.com/mooc-ans"
@@ -475,37 +297,4 @@ internal fun buildVideoEnc(
     val digest = MessageDigest.getInstance("MD5")
         .digest(plain.toByteArray(Charsets.UTF_8))
     return digest.joinToString("") { "%02x".format(it) }
-}
-
-/**
- * 章节目录页（平台任务点口径的唯一来源）的候选地址。
- *
- * 真机上遇到过返回 0/0 的情况：页面结构正常、数字是 0 —— 那不是「没做任务点」，
- * 是这次请求没拿到统计口径。所以按顺序试：
- *   1. mooc2-ans（抓包里 11/392 就是它，四个参数缺一不可）
- *   2. mooc1 的备用路径（同参数，别的账号/版本会走这条）
- *   3. mooc2-ans 再试一次并带时间戳（防服务端缓存了一个 0/0 的结果）
- */
-internal object ChapterPageUrl {
-
-    const val PRIMARY = "https://mooc2-ans.chaoxing.com/mooc2-ans/mycourse/studentcourse"
-    const val FALLBACK = "https://mooc1.chaoxing.com/mooc-ans/mycourse/studentcourse"
-
-    /** cpi 必须是账号里那个真值；缺了平台口径基本拿不到，上层要打日志 */
-    fun hasCpi(course: StudyCourse): Boolean = course.cpi.isNotBlank()
-
-    fun candidates(course: StudyCourse, now: Long = System.currentTimeMillis()): List<String> {
-        val qs = query(course)
-        return listOf(
-            "$PRIMARY?$qs",
-            "$FALLBACK?$qs",
-            "$PRIMARY?$qs&t=$now"
-        )
-    }
-
-    private fun query(course: StudyCourse): String =
-        "courseid=${enc(course.courseId)}" +
-            "&clazzid=${enc(course.clazzId)}" +
-            "&cpi=${enc(course.cpi)}" +
-            "&ut=s"
 }

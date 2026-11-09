@@ -29,13 +29,6 @@ object StudyManager {
     /** 由 UI 在启动前写入 */
     var plan: StudyPlan? = null
 
-    /**
-     * 逐章视频进度回传：课程页拿到就立刻回写逐章行（刷到哪、哪章绿）。
-     * 参数：courseKey、章名、该章已完成视频数、该章视频总数。
-     */
-    @Volatile
-    var chapterProgress: ((String, String, Int, Int) -> Unit)? = null
-
     private var scope: CoroutineScope? = null
     private var job: Job? = null
 
@@ -70,27 +63,11 @@ object StudyManager {
                 val (session, err) = SignEngine.sessionFor(acc)
                 if (session == null) throw IllegalStateException("登录失败：$err")
 
-                val studyApi = StudyApi(session)
-                val answers = com.xxt.sign.work.AnswerProvider(
-                    provider = com.xxt.sign.core.Settings.quizProvider,
-                    endpoint = com.xxt.sign.core.Settings.quizEndpoint,
-                    token = com.xxt.sign.core.Settings.quizToken,
-                    llm = buildPopQuizLlm()
-                )
                 val engine = StudyEngine(
-                    api = studyApi,
+                    api = StudyApi(session),
                     plan = p,
                     onState = { st -> if (id == runId && !stopping) _state.value = st },
-                    onTask = { task -> if (id == runId) updateTask(task, p.accountId) },
-                    // 弹题接口没抓包时是 NONE：不发请求，只靠进度不动判断卡住
-                    popQuizBridge = { course, job ->
-                        if (com.xxt.sign.core.Settings.popQuizFetchUrl.isBlank()) {
-                            PopQuizBridge.NONE
-                        } else {
-                            ConfiguredPopQuizBridge(session.pcClient, course, job)
-                        }
-                    },
-                    popQuizSolver = { q -> solvePopQuiz(answers, q) }
+                    onTask = { task -> if (id == runId) updateTask(task, p.accountId) }
                 )
                 val summary = engine.run()
 
@@ -125,35 +102,6 @@ object StudyManager {
                 LogStore.add("[刷课] 出错：${e.message}", false)
             }
         }
-    }
-
-    /** 弹题作答：把弹题翻译成章节测验那套 question 结构，走题库优先 + LLM 兜底 */
-    private suspend fun solvePopQuiz(
-        answers: com.xxt.sign.work.AnswerProvider,
-        q: PopQuizQuestion
-    ): String {
-        val wq = com.xxt.sign.work.WorkQuestion(
-            qid = q.id,
-            type = q.type,
-            stem = q.stem,
-            options = q.options.mapIndexed { i, text ->
-                com.xxt.sign.work.WorkOption(key = ('A'.code + i).toChar().toString(), text = text)
-            }
-        )
-        val a = answers.search(wq) ?: return ""
-        return a.value
-    }
-
-    /** 大模型只在开关打开且填了 key 时启用，和章节测验一致 */
-    private fun buildPopQuizLlm(): com.xxt.sign.work.LlmClient? {
-        if (!com.xxt.sign.core.Settings.quizLlmEnabled) return null
-        val key = com.xxt.sign.core.Settings.quizLlmKey.trim()
-        if (key.isEmpty()) return null
-        return com.xxt.sign.work.LlmClient(
-            apiKey = key,
-            baseUrl = com.xxt.sign.core.Settings.quizLlmBaseUrl,
-            model = com.xxt.sign.core.Settings.quizLlmModel
-        )
     }
 
     private fun updateTask(task: StudyTaskItem, accountId: String) {

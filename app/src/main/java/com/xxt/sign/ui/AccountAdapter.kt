@@ -31,10 +31,10 @@ class AccountAdapter(
 
     inner class VH(private val b: ItemAccountBinding) : RecyclerView.ViewHolder(b.root) {
         fun bind(a: Account) {
-            b.tvName.text = a.display
+            b.tvName.text = "${a.display}   (${a.phone})"
             val sb = StringBuilder()
-            if (a.display != a.phone) sb.append("手机号 ").append(a.phone).append(" · ")
-            sb.append(if (a.hasSession) "登录状态：已登录" else "登录状态：未登录")
+            sb.append(if (a.hasSession) "会话已保存" else "未登录")
+            if (a.uid.isNotBlank()) sb.append(" · uid=${a.uid}")
             if (a.lastLoginAt > 0) sb.append(" · 上次登录 ${LogStore.fullTime(a.lastLoginAt)}")
             if (a.lastError.isNotBlank()) sb.append("\n⚠ ${a.lastError}")
             b.tvDetail.text = sb.toString()

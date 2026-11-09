@@ -1,6 +1,0 @@
-<?xml version="1.0" encoding="utf-8"?>
-<!-- 按钮底色：禁用态用中性色，和文字保持足够对比 -->
-<selector xmlns:android="http://schemas.android.com/apk/res/android">
-    <item android:state_enabled="false" android:color="@color/btn_bg_disabled" />
-    <item android:color="@color/btn_bg_enabled" />
-</selector>
