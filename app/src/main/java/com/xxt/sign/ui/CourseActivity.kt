@@ -1,15 +1,18 @@
 package com.xxt.sign.ui
 
 import android.os.Bundle
+import android.view.WindowManager
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
 import com.xxt.sign.R
 import com.xxt.sign.core.AccountStore
+import com.xxt.sign.core.LogStore
 import com.xxt.sign.core.Settings
 import com.xxt.sign.databinding.ActivityCourseBinding
 import com.xxt.sign.study.CourseAuditStore
+import com.xxt.sign.study.ChapterRow
 import com.xxt.sign.study.CourseRunQueue
 import com.xxt.sign.study.StudyCourse
 import com.xxt.sign.study.StudyCourseStore
@@ -26,6 +29,10 @@ class CourseActivity : AppCompatActivity() {
     private lateinit var b: ActivityCourseBinding
     private var course: StudyCourse? = null
     private val chapterAdapter = ChapterRowAdapter()
+
+    /** 已经自动滚过的章：只在「正在刷的章变了」时滚，不跟用户抢滚动手势 */
+    private var lastScrolledChapter = ""
+    private var lastLoggedSignature = ""
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -102,29 +109,92 @@ class CourseActivity : AppCompatActivity() {
         b.progress.visibility = if (total > 0) android.view.View.VISIBLE else android.view.View.GONE
         b.progress.setProgressCompat(percent, false)
 
-        // 逐章列表：数据来自体检结果，不额外请求；正在跑的那章高亮
-        val rows = audit?.chapterRows ?: emptyList()
+        // 逐章列表：数据来自体检结果 + 本地章节缓存，不额外请求；正在跑的那章高亮
         val current = run?.currentChapter.orEmpty()
-        val runningNow = runningText.isNotBlank() && run?.running == true
-        val chapterRows = rows.map { r ->
-            ChapterRowAdapter.Row(
-                title = r.title,
-                done = r.done,
-                total = r.total,
-                state = r.state,
-                running = runningNow && current.isNotBlank() && r.title == current
-            )
-        }
+        val runningNow = run?.running == true && current.isNotBlank()
+        val cachedChapters = AccountStore.get(Settings.studyAccountId)
+            ?.let { StudyCourseStore.load(it.id) }
+            ?.chapters?.get(c.key).orEmpty()
+        val chapterRows = mergeChapterRows(audit?.chapterRows.orEmpty(), cachedChapters, current, runningNow)
         chapterAdapter.submit(chapterRows)
-        val finishedChapters = rows.count { it.state == com.xxt.sign.study.ChapterRow.State.DONE }
-        b.tvChapterHeader.visibility = if (rows.isEmpty()) android.view.View.GONE else android.view.View.VISIBLE
-        b.tvChapterHeader.text = "逐章进度 · $finishedChapters/${rows.size} 章已完成"
+
+        val finishedChapters = chapterRows.count { it.state == ChapterRow.State.DONE }
+        b.tvChapterHeader.visibility = if (chapterRows.isEmpty()) android.view.View.GONE else android.view.View.VISIBLE
+        b.tvChapterHeader.text = "章节 · $finishedChapters/${chapterRows.size} 章已完成"
+
+        // 真机排障：列表为空到底是没体检、课程 id 对不上，还是缓存里也没章节
+        val signature = "${chapterRows.size}/${audit?.chapterRows?.size}/${cachedChapters.size}/$current"
+        if (signature != lastLoggedSignature) {
+            lastLoggedSignature = signature
+            LogStore.add(
+                "[课程页] ${c.title} 章节列表 ${chapterRows.size} 行" +
+                    "（体检 ${audit?.chapterRows?.size ?: 0} / 缓存 ${cachedChapters.size}）" +
+                    "，正在刷：${current.ifBlank { "—" }}",
+                chapterRows.isNotEmpty()
+            )
+            if (chapterRows.isEmpty()) {
+                LogStore.add("[课程页] 章节列表是空的：体检结果里有这门课的章节行吗？课程 id=${c.courseId}", false)
+            }
+        }
+
+        // 当前正在刷的那章自动滚到可见位置（只跟换章时滚一次）
+        if (runningNow && current != lastScrolledChapter) {
+            val index = chapterRows.indexOfFirst { it.running }
+            if (index >= 0) {
+                lastScrolledChapter = current
+                b.listChapters.post {
+                    (b.listChapters.layoutManager as? LinearLayoutManager)
+                        ?.scrollToPositionWithOffset(index, b.listChapters.height / 3)
+                }
+            }
+        }
+
         val needs = run?.needsYou.orEmpty().ifBlank { if ((audit?.humanPending ?: 0) > 0) "有要你本人处理的事" else "" }
         b.tvNeedsYou.visibility = if (needs.isBlank()) android.view.View.GONE else android.view.View.VISIBLE
         b.tvNeedsYou.text = needs
 
         val running = run?.running == true || run?.phase == CourseRunQueue.Phase.QUEUED
         b.btnToggle.text = if (running) "暂停" else "开始"
+
+        // 运行期间让屏幕别自己灭（锁屏测试用：不按电源键就不会黑）；暂停/跑完立即清掉
+        if (running) {
+            window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        } else {
+            window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        }
+    }
+
+    /**
+     * 逐章列表：体检行优先（状态最准），体检缺的章用本地章节缓存补，
+     * 两边都没有才真的空。零额外请求。
+     */
+    private fun mergeChapterRows(
+        audited: List<ChapterRow>,
+        cached: List<com.xxt.sign.study.StudyChapter>,
+        current: String,
+        runningNow: Boolean
+    ): List<ChapterRowAdapter.Row> {
+        val byTitle = audited.associateBy { it.title }
+        val titles = LinkedHashSet<String>()
+        audited.forEach { titles.add(it.title) }
+        cached.forEach { titles.add(it.title) }
+        return titles.map { title ->
+            val row = byTitle[title]
+            val ch = cached.firstOrNull { it.title == title }
+            val state = row?.state ?: when {
+                ch == null -> ChapterRow.State.UNCHECKED
+                ch.finished -> ChapterRow.State.DONE
+                ch.needUnlock -> ChapterRow.State.LOCKED
+                else -> ChapterRow.State.TODO
+            }
+            ChapterRowAdapter.Row(
+                title = title,
+                done = row?.done ?: 0,
+                total = row?.total ?: ch?.jobCount ?: 0,
+                state = state,
+                running = runningNow && title == current
+            )
+        }
     }
 
     companion object {

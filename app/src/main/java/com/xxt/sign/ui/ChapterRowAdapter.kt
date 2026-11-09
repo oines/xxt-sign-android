@@ -53,10 +53,9 @@ class ChapterRowAdapter : RecyclerView.Adapter<ChapterRowAdapter.Holder>() {
             b.tvChapterName.text = row.title
 
             val (label, colorRes) = when {
-                row.running -> "进行中" to R.color.primary
+                row.running -> "正在刷" to R.color.primary
                 row.state == ChapterRow.State.DONE -> "已完成" to R.color.ok
                 row.state == ChapterRow.State.LOCKED -> "未开放" to R.color.muted
-                row.state == ChapterRow.State.UNCHECKED -> "没检查到" to R.color.muted
                 else -> "未开始" to R.color.muted
             }
             b.tvChapterState.text = label

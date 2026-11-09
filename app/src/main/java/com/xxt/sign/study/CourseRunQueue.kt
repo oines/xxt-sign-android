@@ -1,5 +1,6 @@
 package com.xxt.sign.study
 
+import com.xxt.sign.App
 import com.xxt.sign.core.AccountStore
 import com.xxt.sign.core.LogStore
 import com.xxt.sign.core.Settings
@@ -53,6 +54,9 @@ object CourseRunQueue {
         val totalPoints: Int = 0,
         /** 正在跑的那一章（课程页列表高亮用） */
         val currentChapter: String = "",
+        /** 正在跑第几章 / 共几章（通知文案「第 N 章」用；0 表示没数出来） */
+        val chapterIndex: Int = 0,
+        val chapterCount: Int = 0,
         /** 需要你本人做的事，空 = 没有 */
         val needsYou: String = ""
     ) {
@@ -107,15 +111,20 @@ object CourseRunQueue {
                 message = if (busy.get()) "排在这门课后面" else "准备开始"
             )
         }
+        // 开前台服务：拿 PARTIAL_WAKE_LOCK + 常驻通知（锁屏/退后台也能继续刷）
+        runCatching { StudyService.start(App.ctx) }
         ensureRunner(account.id)
     }
 
     fun pause(courseKey: String) {
         queue.remove(courseKey)
         StudyManager.stop("已暂停")
-        update(courseKey) { it.copy(phase = Phase.IDLE, message = "已暂停") }
+        update(courseKey) { it.copy(phase = Phase.IDLE, message = "已暂停", currentChapter = "", chapterIndex = 0, chapterCount = 0) }
         LogStore.add("[课程] ${_states.value[courseKey]?.title.orEmpty()}：已暂停", true)
-        if (queue.isEmpty()) stopRunner()
+        if (queue.isEmpty()) {
+            stopRunner()
+            runCatching { StudyService.stop(App.ctx) }
+        }
     }
 
     /** 全局停下（App 退出、用户清理时用） */
@@ -123,9 +132,14 @@ object CourseRunQueue {
         queue.clear()
         StudyManager.stop("已暂停")
         _states.value = _states.value.mapValues { (_, s) ->
-            if (s.running || s.phase == Phase.QUEUED) s.copy(phase = Phase.IDLE, message = "已暂停") else s
+            if (s.running || s.phase == Phase.QUEUED) {
+                s.copy(phase = Phase.IDLE, message = "已暂停", currentChapter = "", chapterIndex = 0, chapterCount = 0)
+            } else {
+                s
+            }
         }
         stopRunner()
+        runCatching { StudyService.stop(App.ctx) }
     }
 
     private fun ensureRunner(accountId: String) {
@@ -154,6 +168,8 @@ object CourseRunQueue {
         scope = null
         worker = null
         busy.set(false)
+        // 队列空了就结束前台服务，唤醒锁跟着释放，不要长期占着
+        runCatching { StudyService.stop(App.ctx) }
     }
 
     private suspend fun runOne(accountId: String, course: StudyCourse) {
@@ -294,7 +310,9 @@ object CourseRunQueue {
                 it.copy(
                     phase = Phase.DOCUMENT,
                     message = "正在把文档任务点做掉 $tag · ${t.job.name}",
-                    currentChapter = t.chapter.title
+                    currentChapter = t.chapter.title,
+                    chapterIndex = i + 1,
+                    chapterCount = targets.size
                 )
             }
             LogStore.add("[文档] $tag 开始：${t.chapter.title} · ${t.job.name}", true)
@@ -351,7 +369,9 @@ object CourseRunQueue {
                 it.copy(
                     phase = Phase.VIDEO,
                     message = listOf(head, chapterTitle).filter { s -> s.isNotBlank() }.joinToString(" · "),
-                    currentChapter = chapterTitle
+                    currentChapter = chapterTitle,
+                    chapterIndex = st.doneChapters,
+                    chapterCount = st.totalChapters
                 )
             }
             if (now - lastLog > 120_000) {
