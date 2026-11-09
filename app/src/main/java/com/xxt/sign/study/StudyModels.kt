@@ -134,6 +134,8 @@ data class ChapterCheck(
     val unknownTasks: Map<String, Int> = emptyMap(),
     /** 这章的结论来自章节目录的 icon_yiwanc，不是逐卡扫描 */
     val fromIcon: Boolean = false,
+    /** 卡片扫描失败（页面没解析出任务点，但章节标了有任务点）：进度未知，不能当「未开始」 */
+    val scanFailed: Boolean = false,
     /** 待做的文档任务点，直接带着 jtoken，省掉再翻一遍 cards 页 */
     val pendingDocuments: List<DocumentJob> = emptyList()
 ) {

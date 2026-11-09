@@ -177,6 +177,35 @@ class CourseAuditTest {
     }
 
     @Test
+    fun partialChapterIsMarkedPartialNotTodo() {
+        val a = CourseAuditCalculator.audit(
+            "c1", "体育",
+            listOf(input("4.4.1 篮球", video("v1", true), video("v2", false)))
+        )
+        val row = a.chapterRows.single()
+        assertEquals(ChapterRow.State.PARTIAL, row.state)
+        assertEquals(2, row.total)
+        assertEquals(1, row.done)
+        assertEquals(1, row.videoDone)
+        assertEquals(2, row.videoTasks)
+    }
+
+    /** 扫描失败的章：进度未知，不能当「未开始」，也不虚增任务点分母 */
+    @Test
+    fun scanFailedChapterIsUncheckedAndNotCounted() {
+        val a = CourseAuditCalculator.audit(
+            "c1", "体育",
+            listOf(
+                input("1.1 导论", document("d1", true)),
+                ChapterAuditInput("2.1 没解析到", com.xxt.sign.study.ChapterCheck(1, 0, 1, 0, scanFailed = true))
+            )
+        )
+        assertEquals(ChapterRow.State.UNCHECKED, a.chapterRows[1].state)
+        assertEquals(1, a.taskPoints)
+        assertEquals(2, a.chapterRows.size)
+    }
+
+    @Test
     fun headlineMentionsTaskPointsNotChapters() {
         val a = CourseAuditCalculator.audit(
             "c1", "英语",

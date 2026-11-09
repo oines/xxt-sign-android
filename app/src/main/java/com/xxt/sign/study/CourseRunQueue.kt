@@ -69,6 +69,12 @@ object CourseRunQueue {
 
     private val queue = ArrayDeque<String>()
     private val courses = mutableMapOf<String, StudyCourse>()
+
+    /** 用户点了暂停的课：跑完的收尾不允许再把「已暂停」覆写成「这一轮跑完了」 */
+    private val pausedKeys = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+
+    /** 每门课当前的运行 Job，暂停时精准取消这一门，不影响队列里其它课 */
+    private val runningJobs = java.util.concurrent.ConcurrentHashMap<String, kotlinx.coroutines.Job>()
     private var scope: CoroutineScope? = null
     private var worker: kotlinx.coroutines.Job? = null
     private val busy = AtomicBoolean(false)
@@ -101,6 +107,7 @@ object CourseRunQueue {
     fun start(course: StudyCourse) {
         val account = AccountStore.get(Settings.studyAccountId) ?: return
         courses[course.key] = course
+        pausedKeys.remove(course.key)
         if (queue.contains(course.key)) return
         queue.addLast(course.key)
         update(course.key) {
@@ -118,9 +125,24 @@ object CourseRunQueue {
 
     fun pause(courseKey: String) {
         queue.remove(courseKey)
+        pausedKeys.add(courseKey)
         StudyManager.stop("已暂停")
-        update(courseKey) { it.copy(phase = Phase.IDLE, message = "已暂停", currentChapter = "", chapterIndex = 0, chapterCount = 0) }
-        LogStore.add("[课程] ${_states.value[courseKey]?.title.orEmpty()}：已暂停", true)
+        runningJobs.remove(courseKey)?.cancel()
+        // 暂停只说暂停：还差多少算给人看，不写成「这一轮跑完了」
+        val st = _states.value[courseKey]
+        val left = if (st != null && st.totalPoints > 0) {
+            (st.totalPoints - st.donePoints).coerceAtLeast(0)
+        } else {
+            -1
+        }
+        val msg = if (left >= 0) "已暂停，还差 $left 个任务点" else "已暂停"
+        update(courseKey) {
+            it.copy(
+                phase = Phase.IDLE, message = msg,
+                currentChapter = "", chapterIndex = 0, chapterCount = 0
+            )
+        }
+        LogStore.add("[课程] ${_states.value[courseKey]?.title.orEmpty()}：$msg", true)
         if (queue.isEmpty()) {
             stopRunner()
             runCatching { StudyService.stop(App.ctx) }
@@ -130,10 +152,18 @@ object CourseRunQueue {
     /** 全局停下（App 退出、用户清理时用） */
     fun pauseAll() {
         queue.clear()
+        pausedKeys.addAll(_states.value.keys)
         StudyManager.stop("已暂停")
+        runningJobs.values.forEach { it.cancel() }
+        runningJobs.clear()
         _states.value = _states.value.mapValues { (_, s) ->
             if (s.running || s.phase == Phase.QUEUED) {
-                s.copy(phase = Phase.IDLE, message = "已暂停", currentChapter = "", chapterIndex = 0, chapterCount = 0)
+                val left = if (s.totalPoints > 0) (s.totalPoints - s.donePoints).coerceAtLeast(0) else -1
+                s.copy(
+                    phase = Phase.IDLE,
+                    message = if (left >= 0) "已暂停，还差 $left 个任务点" else "已暂停",
+                    currentChapter = "", chapterIndex = 0, chapterCount = 0
+                )
             } else {
                 s
             }
@@ -150,14 +180,26 @@ object CourseRunQueue {
             while (queue.isNotEmpty()) {
                 val key = queue.removeFirstOrNull() ?: break
                 val course = courses[key] ?: continue
+                if (pausedKeys.contains(key)) continue
                 busy.set(true)
-                runCatching { runOne(accountId, course) }
-                    .onFailure {
-                        LogStore.add("[课程] ${course.title} 出错：${it.message}", false)
-                        update(key) { s -> s.copy(phase = Phase.STUCK, message = "出错了，点开始再跑一次") }
-                    }
+                // 每门课单独一个 Job：暂停时只取消这一门，不弄死整条队列
+                val runJob = newScope.launch {
+                    runCatching { runOne(accountId, course) }
+                        .onFailure { e ->
+                            if (e is kotlinx.coroutines.CancellationException || pausedKeys.contains(key)) {
+                                return@onFailure
+                            }
+                            LogStore.add("[课程] ${course.title} 出错：${e.message}", false)
+                            update(key) { s -> s.copy(phase = Phase.STUCK, message = "出错了，点开始再跑一次") }
+                        }
+                }
+                runningJobs[key] = runJob
+                runJob.join()
+                runningJobs.remove(key)
                 busy.set(false)
-                StudyManager.stop("这门的视频刷完了")
+                if (!pausedKeys.contains(key)) {
+                    StudyManager.stop("这门的视频刷完了")
+                }
             }
             stopRunner()
         }
@@ -247,13 +289,33 @@ object CourseRunQueue {
         }
 
         // 5) 收尾：再体检一次，把「还差什么」刷新到最新（用户验收就看这个数）
-        val after = runCatching {
+        suspend fun auditOnce(): CourseAudit? = runCatching {
             val fresh = api.getChapterPage(course)
             CourseAuditor(api).audit(course, fresh.chapters, fresh.donePoints, fresh.totalPoints) {}
-        }.getOrNull()
-        val latest = after?.audit ?: audit.audit
+        }.getOrNull()?.audit
+
+        var latest = auditOnce() ?: audit.audit
+        if (pausedKeys.contains(key)) return
+        // 真机 197 vs 平台 203：刚跑完就体检，最后几个视频的完成可能还没回填。
+        // 隔 5 秒再补一次，取更好的那个（只补一次，不轮询）。
+        if (latest.doneTaskPoints < latest.taskPoints) {
+            delay(5_000)
+            if (pausedKeys.contains(key)) return
+            val again = auditOnce()
+            if (again != null && again.doneTaskPoints > latest.doneTaskPoints) {
+                LogStore.add(
+                    "[体检] 跑完补一次：已完成 ${latest.doneTaskPoints} → ${again.doneTaskPoints}" +
+                        "/${again.taskPoints}（等 5 秒让服务端回填）",
+                    true
+                )
+                latest = again
+            }
+        }
         val merged = CourseAuditStore.load(accountId).filterNot { it.courseId == course.courseId } + latest
         CourseAuditStore.save(accountId, merged)
+
+        // 暂停后不允许再用「这一轮跑完了」覆盖「已暂停」
+        if (pausedKeys.contains(key)) return
 
         update(key) {
             it.copy(

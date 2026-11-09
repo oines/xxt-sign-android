@@ -86,19 +86,25 @@ data class ChapterRow(
     val title: String,
     val total: Int,
     val done: Int,
-    val state: State
+    val state: State,
+    /** 视频任务点完成情况，"部分完成（视频 3/5）" 用 */
+    val videoDone: Int = 0,
+    val videoTasks: Int = 0
 ) {
     enum class State {
-        /** 已完成：icon_yiwanc 优先，其次该章任务点全完成 */
+        /** 已完成：该章所有带 jobid 的任务点都完成（不再只看 icon_yiwanc） */
         DONE,
 
-        /** 还没做完 */
+        /** 做了一部分：完成数 0 < done < total */
+        PARTIAL,
+
+        /** 一个都没做 */
         TODO,
 
         /** 章节未开放 */
         LOCKED,
 
-        /** 没检查到 */
+        /** 没检查到（扫描失败 / 体检没跑到） */
         UNCHECKED
     }
 }
@@ -147,15 +153,32 @@ object CourseAuditCalculator {
                 continue
             }
 
+            // 卡片没解析到但章节标了有任务点：不知道真实进度，别当「未开始」也不虚增分母
+            if (check.scanFailed) {
+                rows.add(ChapterRow(ch.chapterTitle, 0, 0, ChapterRow.State.UNCHECKED))
+                gaps.add(
+                    CourseAudit.Gap(CourseAudit.Kind.UNKNOWN, ch.chapterTitle, "这章任务点没解析到，进度未知")
+                )
+                continue
+            }
+
             checked++
             taskPoints += check.allTasks
             donePoints += check.allDone
+            // 逐章状态按任务点算（icon_yiwanc 只会在全完成时亮，不能拿来当唯一依据）
+            val state = when {
+                check.allTasks > 0 && check.allComplete -> ChapterRow.State.DONE
+                check.allDone > 0 -> ChapterRow.State.PARTIAL
+                else -> ChapterRow.State.TODO
+            }
             rows.add(
                 ChapterRow(
                     title = ch.chapterTitle,
                     total = check.allTasks,
                     done = check.allDone,
-                    state = if (check.allComplete) ChapterRow.State.DONE else ChapterRow.State.TODO
+                    state = state,
+                    videoDone = check.videoDone,
+                    videoTasks = check.videoTasks
                 )
             )
             if (check.allComplete) continue

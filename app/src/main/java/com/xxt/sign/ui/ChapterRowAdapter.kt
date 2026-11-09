@@ -23,7 +23,10 @@ class ChapterRowAdapter : RecyclerView.Adapter<ChapterRowAdapter.Holder>() {
         val done: Int,
         val total: Int,
         val state: ChapterRow.State,
-        val running: Boolean
+        val running: Boolean,
+        /** 视频任务点完成情况，部分完成时显示「视频 3/5」 */
+        val videoDone: Int = 0,
+        val videoTasks: Int = 0
     )
 
     private var rows: List<Row> = emptyList()
@@ -56,6 +59,10 @@ class ChapterRowAdapter : RecyclerView.Adapter<ChapterRowAdapter.Holder>() {
                 row.running -> "正在刷" to R.color.primary
                 row.state == ChapterRow.State.DONE -> "已完成" to R.color.ok
                 row.state == ChapterRow.State.LOCKED -> "未开放" to R.color.muted
+                row.state == ChapterRow.State.PARTIAL ->
+                    (if (row.videoTasks > 0) "部分完成 · 视频 ${row.videoDone}/${row.videoTasks}" else "进行中") to
+                        R.color.primary
+                row.state == ChapterRow.State.UNCHECKED -> "没查到" to R.color.muted
                 else -> "未开始" to R.color.muted
             }
             b.tvChapterState.text = label

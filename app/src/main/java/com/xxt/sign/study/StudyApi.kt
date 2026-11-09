@@ -354,8 +354,8 @@ class StudyApi(private val session: CxSession) {
         }
         if (notOpen) return ChapterCheck(0, 0, 0, 0, notOpen = true)
         if (map.isEmpty() && chapter.jobCount > 0) {
-            // 页面没解析出任务但章节标了有任务点：按未完成处理，避免误标蓝色
-            return ChapterCheck(1, 0, 1, 0)
+            // 页面没解析出任务但章节标了有任务点：进度未知，标 scanFailed，不要伪造一个任务点
+            return ChapterCheck(1, 0, 1, 0, scanFailed = true)
         }
         return summarizeChapter(map.values)
     }

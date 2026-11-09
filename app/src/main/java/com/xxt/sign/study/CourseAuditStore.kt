@@ -28,6 +28,7 @@ object CourseAuditStore {
                     JSONObject()
                         .put("t", r.title).put("d", r.done).put("n", r.total)
                         .put("s", r.state.name)
+                        .put("vd", r.videoDone).put("vt", r.videoTasks)
                 )
             }
             arr.put(
@@ -69,7 +70,9 @@ object CourseAuditStore {
                                 total = r.optInt("n"),
                                 done = r.optInt("d"),
                                 state = runCatching { ChapterRow.State.valueOf(r.optString("s")) }
-                                    .getOrDefault(ChapterRow.State.UNCHECKED)
+                                    .getOrDefault(ChapterRow.State.UNCHECKED),
+                                videoDone = r.optInt("vd"),
+                                videoTasks = r.optInt("vt")
                             )
                         }
                     } ?: emptyList(),

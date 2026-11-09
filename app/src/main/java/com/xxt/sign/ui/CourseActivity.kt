@@ -87,12 +87,8 @@ class CourseActivity : AppCompatActivity() {
         val done = run?.donePoints ?: audit?.doneTaskPoints ?: 0
         val total = run?.totalPoints ?: audit?.taskPoints ?: 0
 
-        // 一行就够：在跑就写在跑什么；没跑就只说进度，不再多写一句「没在跑」
-        val runningText = when {
-            run != null && run.running -> run.message
-            run != null && run.phase == CourseRunQueue.Phase.STUCK -> run.message
-            else -> ""
-        }
+        // 一行就够：在跑/暂停/跑完都直接用它的人话，不再按 phase 过滤（否则暂停后这行会消失）
+        val runningText = run?.message.orEmpty().takeIf { it.isNotBlank() && it != "没在跑" }.orEmpty()
         val progressText = if (total > 0) "任务点 $done/$total" else ""
         val line = listOf(runningText, progressText).filter { it.isNotBlank() }.joinToString(" · ")
         b.tvStateLine.visibility = if (line.isBlank()) android.view.View.GONE else android.view.View.VISIBLE
@@ -185,14 +181,17 @@ class CourseActivity : AppCompatActivity() {
                 ch == null -> ChapterRow.State.UNCHECKED
                 ch.finished -> ChapterRow.State.DONE
                 ch.needUnlock -> ChapterRow.State.LOCKED
-                else -> ChapterRow.State.TODO
+                // 只有缓存、没体检过的章：不能编「未开始」，就是没查到
+                else -> ChapterRow.State.UNCHECKED
             }
             ChapterRowAdapter.Row(
                 title = title,
                 done = row?.done ?: 0,
                 total = row?.total ?: ch?.jobCount ?: 0,
                 state = state,
-                running = runningNow && title == current
+                running = runningNow && title == current,
+                videoDone = row?.videoDone ?: 0,
+                videoTasks = row?.videoTasks ?: 0
             )
         }
     }
