@@ -21,9 +21,19 @@ data class WorkJob(
     /** mArg.defaults.ktoken */
     val ktoken: String,
     val name: String = "",
-    val courseTitle: String = ""
+    val courseTitle: String = "",
+    /** property.module（实测全是 work） */
+    val module: String = "",
+    /** property.worktype：workA = 随堂测验（章节测验）；其它值不猜，交给人处理 */
+    val worktype: String = ""
 ) {
     val key: String get() = "$courseId:$jobId"
+
+    /** 只有 workA 才是能自动做的章节测验 */
+    val isQuiz: Boolean get() = worktype.equals("workA", ignoreCase = true)
+
+    /** workid 但 worktype 不是 workA：当作作业/考试，不自动作答 */
+    val isOtherWork: Boolean get() = worktype.isNotBlank() && !isQuiz
 }
 
 /** 一个选项 */

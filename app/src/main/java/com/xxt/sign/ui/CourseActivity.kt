@@ -13,6 +13,7 @@ import com.xxt.sign.study.CourseAuditStore
 import com.xxt.sign.study.CourseRunQueue
 import com.xxt.sign.study.StudyCourse
 import com.xxt.sign.study.StudyCourseStore
+import androidx.recyclerview.widget.LinearLayoutManager
 import kotlinx.coroutines.launch
 
 /**
@@ -24,6 +25,7 @@ class CourseActivity : AppCompatActivity() {
 
     private lateinit var b: ActivityCourseBinding
     private var course: StudyCourse? = null
+    private val chapterAdapter = ChapterRowAdapter()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -36,6 +38,8 @@ class CourseActivity : AppCompatActivity() {
             ?.courses?.firstOrNull { it.key == key }
 
         b.toolbar.setNavigationOnClickListener { finish() }
+        b.listChapters.layoutManager = LinearLayoutManager(this)
+        b.listChapters.adapter = chapterAdapter
         onBackPressedDispatcher.addCallback(this, object : androidx.activity.OnBackPressedCallback(true) {
             override fun handleOnBackPressed() = finish()
         })
@@ -87,10 +91,34 @@ class CourseActivity : AppCompatActivity() {
         b.tvStateLine.visibility = if (line.isBlank()) android.view.View.GONE else android.view.View.VISIBLE
         b.tvStateLine.text = line
 
-        b.tvProgressText.visibility = android.view.View.GONE
+        // 进度条：0 就画 0%（之前底槽 + 尾端小圆点看起来像满格）
+        val percent = if (total > 0) (done * 100L / total).toInt().coerceIn(0, 100) else 0
+        b.tvProgressText.visibility = android.view.View.VISIBLE
+        b.tvProgressText.text = if (total > 0) {
+            "任务点 $done/$total · $percent%"
+        } else {
+            "还没体检过，点开始"
+        }
         b.progress.visibility = if (total > 0) android.view.View.VISIBLE else android.view.View.GONE
-        b.progress.setProgressCompat(if (total > 0) done * 100 / total else 0, false)
+        b.progress.setProgressCompat(percent, false)
 
+        // 逐章列表：数据来自体检结果，不额外请求；正在跑的那章高亮
+        val rows = audit?.chapterRows ?: emptyList()
+        val current = run?.currentChapter.orEmpty()
+        val runningNow = runningText.isNotBlank() && run?.running == true
+        val chapterRows = rows.map { r ->
+            ChapterRowAdapter.Row(
+                title = r.title,
+                done = r.done,
+                total = r.total,
+                state = r.state,
+                running = runningNow && current.isNotBlank() && r.title == current
+            )
+        }
+        chapterAdapter.submit(chapterRows)
+        val finishedChapters = rows.count { it.state == com.xxt.sign.study.ChapterRow.State.DONE }
+        b.tvChapterHeader.visibility = if (rows.isEmpty()) android.view.View.GONE else android.view.View.VISIBLE
+        b.tvChapterHeader.text = "逐章进度 · $finishedChapters/${rows.size} 章已完成"
         val needs = run?.needsYou.orEmpty().ifBlank { if ((audit?.humanPending ?: 0) > 0) "有要你本人处理的事" else "" }
         b.tvNeedsYou.visibility = if (needs.isBlank()) android.view.View.GONE else android.view.View.VISIBLE
         b.tvNeedsYou.text = needs

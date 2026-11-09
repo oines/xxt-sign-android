@@ -11,6 +11,7 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import org.json.JSONObject
 import java.security.MessageDigest
+import java.util.concurrent.TimeUnit
 import kotlin.random.Random
 
 /** 简单的请求限速器：同一账号的请求串行排队，保证最小间隔 + 随机抖动 */
@@ -49,6 +50,18 @@ class StudyApi(private val session: CxSession) {
     private val limiter = RequestLimiter(500L, 200L)
     private val checkLimiter = RequestLimiter(100L, 50L)
     private val videoLimiter = RequestLimiter(2000L, 2000L)
+
+    /**
+     * 文档完成接口专用的短超时客户端。
+     * 共享客户端的 callTimeout 是 50s，一个卡住的连接能把整段流水分拖垮；
+     * 这里 15s 就丢，调用方再包一层 withTimeoutOrNull 就绝不会无限期挂着。
+     */
+    private val docClient by lazy {
+        c.newBuilder()
+            .callTimeout(15, TimeUnit.SECONDS)
+            .readTimeout(12, TimeUnit.SECONDS)
+            .build()
+    }
 
     /** 有些老账号 uid/fid 只存在于 Cookie 里 */
     private val uid: String
@@ -156,10 +169,11 @@ class StudyApi(private val session: CxSession) {
         val out = LinkedHashMap<String, WorkJob>()
         var ktoken = ""
         var cpi = course.cpi.ifBlank { "0" }
-        // 一个章节可能有多张卡片：只拉 num=0 会漏一大半（体育 91 章只统计到 82 个附件）。
-        // 一直往后翻，直到某一页没有新任务点为止。
-        var emptyStreak = 0
-        for (num in 0..MAX_CARD_PAGES) {
+        // 一个章节可能有多张卡片：只拉 num=0 会漏一大半。
+        // 退出条件只看「有没有新任务点」（见 [PageSweep]），不能用「这一页是不是空的」。
+        val sweep = PageSweep()
+        var last = 0
+        for (num in 0 until PageSweep.DEFAULT_MAX_PAGES) {
             limiter.acquire()
             val r = c.get(cardsUrl(course, chapter, num))
             checkLogin(r.body)
@@ -179,15 +193,22 @@ class StudyApi(private val session: CxSession) {
                     enc = w.enc,
                     ktoken = ktoken,
                     name = w.name,
-                    courseTitle = course.title
+                    courseTitle = course.title,
+                    module = w.module,
+                    worktype = w.worktype
                 )
             }
-            if (parsed.jobs.isEmpty()) {
-                emptyStreak++
-                if (emptyStreak >= 2 && num > 0) break
-            } else {
-                emptyStreak = 0
-            }
+            val newItems = out.size - last
+            last = out.size
+            if (!sweep.afterNew(newItems)) break
+        }
+        // 只有真的找到测验或撞到上限才写日志，否则 91 章会刷屏
+        if (out.isNotEmpty() || sweep.hitLimit) {
+            LogStore.add(
+                "[刷课] 测验扫描 ${chapter.title}：翻了 ${sweep.pages} 页，找到 ${out.size} 份" +
+                    (if (sweep.hitLimit) "（撞上限，可能还有）" else ""),
+                out.isNotEmpty()
+            )
         }
         return out.values.map { if (it.ktoken.isBlank()) it.copy(ktoken = ktoken) else it }
     }
@@ -200,59 +221,65 @@ class StudyApi(private val session: CxSession) {
 
     /**
      * 文档任务点：GET 一次 `/mooc-ans/job/document` 就算完成，不需要真读。
-     * jtoken 就在 attachment 里。
+     * 参数已用真实接口验证：缺 jtoken 会被回 `illegal params`，
+     * knowledgeid 用 otherInfo 里的 nodeId（拿不到才用章节目录 id）。
      */
-    suspend fun completeDocument(course: StudyCourse, chapter: StudyChapter, job: DocumentJob): Boolean {
+    suspend fun completeDocument(course: StudyCourse, chapter: StudyChapter, job: DocumentJob): DocumentResult {
         limiter.acquire()
+        val knowledgeId = job.knowledgeId.ifBlank { chapter.id }
         val url = "https://mooc1.chaoxing.com/mooc-ans/job/document" +
             "?jobid=${enc(job.jobId)}" +
-            "&knowledgeid=${enc(chapter.id)}" +
+            "&knowledgeid=${enc(knowledgeId)}" +
             "&courseid=${enc(course.courseId)}" +
             "&clazzid=${enc(course.clazzId)}" +
             "&jtoken=${enc(job.jtoken)}" +
-            "&userid=$uid&ut=s&view=pc&isfiled=0&enc=" +
-            enc(buildVideoEnc(course.clazzId, uid, job.jobId, job.jobId, 0, 1))
-        val r = c.get(url, mapOf("Referer" to CHAPTER_REFERER))
+            "&checkMicroTopic=true&microTopicId=&courseEngineInfo=false"
+        val r = docClient.get(url, mapOf("Referer" to CHAPTER_REFERER))
         checkLogin(r.body)
         if (!r.ok) {
             LogStore.add("[刷课] 文档 ${job.name} 完成请求失败 HTTP ${r.code}", false)
-            return false
+            return DocumentResult.FAILED
         }
-        // 服务端成功一般返回 "success" 或 1；非明确失败就当完成（下一轮体检会复核）
-        val failed = r.body.contains("error") && !r.body.contains("success")
-        if (failed) LogStore.add("[刷课] 文档 ${job.name} 返回：${r.body.take(120)}", false)
-        return !failed
+        val body = r.body
+        return when {
+            body.contains("考核点已经完成") -> DocumentResult.ALREADY
+            Regex("\"status\"\\s*:\\s*true").containsMatchIn(body) -> DocumentResult.DONE
+            body.trim() == "1" || body.trim() == "success" -> DocumentResult.DONE
+            else -> {
+                LogStore.add("[刷课] 文档 ${job.name} 返回：${body.take(120)}", false)
+                DocumentResult.FAILED
+            }
+        }
     }
 
-    /** 一个章节里的文档任务点 */
+    /** 一个章节里的文档任务点（已完成的不会返回，省得白跑接口） */
     suspend fun getDocumentJobs(course: StudyCourse, chapter: StudyChapter): List<DocumentJob> {
         val out = LinkedHashMap<String, DocumentJob>()
-        var emptyStreak = 0
-        for (num in 0..MAX_CARD_PAGES) {
+        val sweep = PageSweep()
+        var last = 0
+        for (num in 0 until PageSweep.DEFAULT_MAX_PAGES) {
             limiter.acquire()
             val r = c.get(cardsUrl(course, chapter, num))
             checkLogin(r.body)
             if (r.body.contains("章节未开放")) return emptyList()
             val jobs = StudyParser.parseDocumentJobs(r.body)
             jobs.forEach { out[it.jobId] = it }
-            if (jobs.isEmpty()) {
-                emptyStreak++
-                if (emptyStreak >= 2 && num > 0) break
-            } else {
-                emptyStreak = 0
-            }
+            val newItems = out.size - last
+            last = out.size
+            if (!sweep.afterNew(newItems)) break
         }
         return out.values.toList()
     }
 
-    /** 检查一个章节里所有任务点（含视频、章节测验）的完成情况 */
+    /** 检查一个章节里所有任务点（含视频、章节测验）的完成情况，按类型分开数 */
     suspend fun checkChapter(course: StudyCourse, chapter: StudyChapter): ChapterCheck {
         val map = LinkedHashMap<String, CardTask>()
         var notOpen = false
-        var noNewStreak = 0
+        val sweep = PageSweep()
+        var last = 0
         // 不用 jobCount 截断：章节测验/文档可能和视频不在同一张卡片上。
-        // 逐 num 往后翻，连续两页没有新任务点才停（漏卡片 = 扫到的测验数就错）。
-        for (num in 0..MAX_CARD_PAGES) {
+        // 退出条件看「有没有新任务点」，见 [PageSweep]。
+        for (num in 0 until PageSweep.DEFAULT_MAX_PAGES) {
             checkLimiter.acquire()
             val r = c.get(
                 "https://mooc1.chaoxing.com/mooc-ans/knowledge/cards" +
@@ -265,29 +292,17 @@ class StudyApi(private val session: CxSession) {
                 notOpen = true
                 break
             }
-            val tasks = StudyParser.parseCardTasks(r.body)
-            val before = map.size
-            tasks.forEach { map[it.key] = it }
-            if (tasks.isEmpty() || map.size == before) {
-                noNewStreak++
-                if (noNewStreak >= 2) break
-            } else {
-                noNewStreak = 0
-            }
+            StudyParser.parseCardTasks(r.body).forEach { map[it.key] = it }
+            val newItems = map.size - last
+            last = map.size
+            if (!sweep.afterNew(newItems)) break
         }
         if (notOpen) return ChapterCheck(0, 0, 0, 0, notOpen = true)
         if (map.isEmpty() && chapter.jobCount > 0) {
             // 页面没解析出任务但章节标了有任务点：按未完成处理，避免误标蓝色
             return ChapterCheck(1, 0, 1, 0)
         }
-        val all = map.values
-        return ChapterCheck(
-            allTasks = all.size,
-            allDone = all.count { it.passed },
-            videoTasks = all.count { it.isVideo },
-            videoDone = all.count { it.isVideo && it.passed },
-            doneVideoJobs = all.filter { it.isVideo && it.passed }.map { it.key }.toSet()
-        )
+        return summarizeChapter(map.values)
     }
 
     suspend fun videoStatus(objectId: String): VideoStatus? {        limiter.acquire()

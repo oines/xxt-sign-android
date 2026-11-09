@@ -99,7 +99,11 @@ object StudyParser {
         /** 123456 */
         val workId: String,
         val enc: String,
-        val name: String
+        val name: String,
+        /** property.module（实测全是 work） */
+        val module: String = "",
+        /** property.worktype（实测全是 workA = 随堂测验）；不看标题 */
+        val worktype: String = ""
     )
 
     /**
@@ -132,12 +136,24 @@ object StudyParser {
             if (workId.isBlank() || jobId.isBlank()) continue
 
             val enc = card.optString("enc").takeUnless { it == "null" }.orEmpty()
-            val name = card.optJSONObject("property")?.optString("name").orEmpty()
+            val property = card.optJSONObject("property")
+            val name = property?.optString("name").orEmpty()
+                .ifBlank { property?.optString("title").orEmpty() }
                 .ifBlank { card.optString("name") }
                 .takeUnless { it == "null" }.orEmpty()
                 .ifBlank { "章节测验" }
+            val module = property?.optString("module").takeUnless { it == "null" }.orEmpty()
+            val worktype = property?.optString("worktype").takeUnless { it == "null" }.orEmpty()
+                .ifBlank { card.optString("worktype").takeUnless { it == "null" }.orEmpty() }
 
-            jobs[jobId] = RawWorkCard(jobId = jobId, workId = workId, enc = enc, name = name)
+            jobs[jobId] = RawWorkCard(
+                jobId = jobId,
+                workId = workId,
+                enc = enc,
+                name = name,
+                module = module,
+                worktype = worktype
+            )
         }
         return WorkCards(jobs.values.toList(), ktoken, cpi)
     }
@@ -200,7 +216,7 @@ object StudyParser {
         }
     }
 
-    /** 文档类任务点：type=document，带 jtoken，一次 GET 就算完成 */
+    /** 文档类任务点：type=document，带 jtoken，一次 GET 就算完成；已完成的直接剔掉 */
     fun parseDocumentJobs(html: String): List<DocumentJob> {
         if (html.contains("章节未开放")) return emptyList()
         val compact = html.replace(" ", "")
@@ -214,16 +230,32 @@ object StudyParser {
             val card = attachments.optJSONObject(i) ?: continue
             if (!isRealTaskPoint(card)) continue
             if (!card.optString("type").equals("document", ignoreCase = true)) continue
+            // 已完成的文档不要再去请求一遍（体育课 157 个文档早就全绿了）
+            if (isPassed(card)) continue
             val jobId = card.optString("jobid").takeUnless { it == "null" }.orEmpty()
             if (jobId.isBlank()) continue
             val jtoken = card.optString("jtoken").takeUnless { it == "null" }.orEmpty()
-            val name = card.optJSONObject("property")?.optString("name").orEmpty()
-                .ifBlank { card.optString("name") }
-                .takeUnless { it == "null" }.orEmpty()
-                .ifBlank { "文档任务" }
-            out[jobId] = DocumentJob(jobId = jobId, jtoken = jtoken, name = name)
+            out[jobId] = DocumentJob(
+                jobId = jobId,
+                jtoken = jtoken,
+                name = cardName(card),
+                knowledgeId = knowledgeIdOf(card)
+            )
         }
         return out.values.toList()
+    }
+
+    private fun cardName(card: JSONObject): String =
+        card.optJSONObject("property")?.optString("name").orEmpty()
+            .ifBlank { card.optJSONObject("property")?.optString("title").orEmpty() }
+            .ifBlank { card.optString("name") }
+            .takeUnless { it == "null" }.orEmpty()
+            .ifBlank { "任务点" }
+
+    /** otherInfo 里的 nodeId_xxx 才是完成接口要的 knowledgeid，拿不到才用章节目录 id */
+    private fun knowledgeIdOf(card: JSONObject): String {
+        val otherInfo = card.optString("otherInfo").takeUnless { it == "null" }.orEmpty()
+        return Regex("nodeId_(\\d+)").find(otherInfo)?.groupValues?.getOrNull(1).orEmpty()
     }
 
     private fun isPassed(card: JSONObject): Boolean {
@@ -236,7 +268,7 @@ object StudyParser {
         }
     }
 
-    /** 检查任务点：返回这一页里的所有附件任务及其完成状态 */
+    /** 检查任务点：返回这一页里的所有附件任务及其完成状态（带原始类型字段） */
     fun parseCardTasks(html: String): List<CardTask> {
         if (html.contains("章节未开放")) return emptyList()
         val compact = html.replace(" ", "")
@@ -248,8 +280,9 @@ object StudyParser {
         val out = mutableListOf<CardTask>()
         for (i in 0 until attachments.length()) {
             val card = attachments.optJSONObject(i) ?: continue
-            val type = card.optString("type").ifBlank { "unknown" }
-            val jobId = card.optString("jobid")
+            val t = card.optString("type").takeUnless { it == "null" }.orEmpty()
+            val type = t.ifBlank { "unknown" }
+            val jobId = card.optString("jobid").takeUnless { it == "null" }.orEmpty()
             // 只有 jobid 存在且 job==true 才是任务点；其余是资料/扩展，不参与"还差什么"
             if (!isRealTaskPoint(card)) continue
             val mid = card.optString("mid")
@@ -260,11 +293,19 @@ object StudyParser {
                 objectId.isNotBlank() -> "$type:$objectId"
                 else -> "$type:$i"
             }
+            val property = card.optJSONObject("property")
             out.add(
                 CardTask(
                     key = key,
-                    isVideo = type.equals("video", ignoreCase = true),
-                    passed = isPassed(card)
+                    type = type,
+                    passed = isPassed(card),
+                    // 类型只看原始字段：type + property.module/worktype，标题不作数
+                    module = property?.optString("module").takeUnless { it == "null" }.orEmpty(),
+                    worktype = property?.optString("worktype").takeUnless { it == "null" }.orEmpty()
+                        .ifBlank { card.optString("worktype").takeUnless { it == "null" }.orEmpty() },
+                    name = cardName(card),
+                    jtoken = card.optString("jtoken").takeUnless { it == "null" }.orEmpty(),
+                    knowledgeId = knowledgeIdOf(card)
                 )
             )
         }

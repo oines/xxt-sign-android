@@ -138,6 +138,7 @@ class StudyParserTest {
         val json = """
             {"attachments":[
               {"jobid":"doc-1","job":true,"type":"document","jtoken":"jt-abc",
+               "otherInfo":"nodeId_8899-rt_1d",
                "property":{"name":"第一章 文档"}},
               {"jobid":"v-1","job":true,"type":"video","objectId":"o1",
                "property":{"name":"视频"}},
@@ -150,6 +151,46 @@ class StudyParserTest {
         assertEquals("doc-1", docs[0].jobId)
         assertEquals("jt-abc", docs[0].jtoken)
         assertEquals("第一章文档", docs[0].name)  // mArg 是去空格后解析的
+        assertEquals("8899", docs[0].knowledgeId)  // 完成接口要的 knowledgeid 来自 otherInfo
+    }
+
+    /** 早就做完的文档不要再请求一遍（真机上 157 个文档全绿还被逐条 GET） */
+    @Test
+    fun parseDocumentJobs_skipsFinished() {
+        val json = """
+            {"attachments":[
+              {"jobid":"doc-1","job":true,"type":"document","jtoken":"jt-abc","isPassed":true,
+               "property":{"name":"已完成的文档"}},
+              {"jobid":"doc-2","job":true,"type":"document","jtoken":"jt-two","isPassed":false,
+               "property":{"name":"待做文档"}}
+            ]}
+        """.trimIndent()
+        val docs = StudyParser.parseDocumentJobs("<script>mArg=$json;</script>")
+        assertEquals(1, docs.size)
+        assertEquals("doc-2", docs[0].jobId)
+    }
+
+    /** 测验类型只能看 property.module + property.worktype，不能看标题 */
+    @Test
+    fun parseCardTasks_readsWorktypeNotTitle() {
+        val json = """
+            {"attachments":[
+              {"jobid":"work-5cea97cf3be1429fb3e4bf231cc0524d","job":true,"type":"workid",
+               "property":{"module":"work","worktype":"workA","title":"随堂测验",
+                 "workid":"5cea97cf3be1429fb3e4bf231cc0524d"},"isPassed":false},
+              {"jobid":"work-b","job":true,"type":"workid",
+               "property":{"module":"work","worktype":"workB","title":"随堂测验"},"isPassed":false}
+            ]}
+        """.trimIndent()
+        val tasks = StudyParser.parseCardTasks("<script>mArg=$json;</script>")
+        assertEquals(2, tasks.size)
+        val quiz = tasks.first { it.key.startsWith("work-5") }
+        assertTrue("workA 就是章节测验", quiz.isQuiz)
+        assertEquals("work", quiz.module)
+        assertEquals("workA", quiz.worktype)
+        val other = tasks.first { it.key == "work-b" }
+        assertFalse("非 workA 不猜成测验", other.isQuiz)
+        assertTrue(other.isOtherWork)
     }
 
     /** 章节完成状态看 icon_yiwanc，不看 isPassed */

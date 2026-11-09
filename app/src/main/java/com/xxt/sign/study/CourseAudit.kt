@@ -4,12 +4,14 @@ package com.xxt.sign.study
  * 「这门课还差什么」的体检结果。
  *
  * 目标定义（用户原话）：**一门课丢给它，最后课程页的任务点应该全绿**。
- * 也就是视频任务点全完成、章节测验全部提交拿到分、列表里没有红色未完成任务点。
+ * 也就是视频任务点全完成、章节测验全部提交拿到分、文档任务点全完成。
  *
- * 所以这里不按「交了几份测验」统计，而按**任务点**统计：
- *  - 能自己做完的（视频 / 章节测验）算缺口，做完就减少
- *  - 必须本人出手的（人脸、滑块、位置签到、考试、要手写/上传的作业、未开放章节）单独列出，
- *    不算失败，但也不假装做完了
+ * 统计口径是**任务点**（knowledge/cards 里带 jobid 且 job=true 的 attachment），
+ * 不按章算 —— 用户看的是「还差几个任务点」。
+ *
+ * 能自己做完的：视频 / 文档 / workA 章节测验。
+ * 必须本人出手的：非 workA 的 work（作业/考试/待确认的新类型）、音频、认不出的类型、未开放章节。
+ * 分类只看原始字段 type + property.worktype，**不看标题**（实测标题叫什么的都有）。
  */
 data class CourseAudit(
     val courseId: String,
@@ -18,18 +20,22 @@ data class CourseAudit(
     val taskPoints: Int = 0,
     /** 已完成任务点 */
     val doneTaskPoints: Int = 0,
-    /** 视频待刷（章节数） */
+    /** 待做视频任务点 */
     val videoPending: Int = 0,
-    /** 章节测验待做（估计份数） */
+    /** 待做文档任务点（它能自己刷掉） */
+    val documentPending: Int = 0,
+    /** 待做章节测验份数（workA） */
     val quizPending: Int = 0,
     /** 必须本人处理的任务点 */
     val humanPending: Int = 0,
     val gaps: List<Gap> = emptyList(),
+    /** 逐章进度（课程页直接渲染，不另请求） */
+    val chapterRows: List<ChapterRow> = emptyList(),
     val chapters: Int = 0,
     val checkedChapters: Int = 0,
     val auditedAt: Long = System.currentTimeMillis()
 ) {
-    enum class Kind { VIDEO, QUIZ, HUMAN, UNKNOWN }
+    enum class Kind { VIDEO, DOCUMENT, QUIZ, HUMAN, UNKNOWN }
 
     data class Gap(
         val kind: Kind,
@@ -37,8 +43,11 @@ data class CourseAudit(
         val detail: String
     )
 
-    /** 还差多少任务点（只算它自己能做完的） */
+    /** 还差多少任务点（含需本人的，界面上的「还差」就是这个数） */
     val remaining: Int get() = (taskPoints - doneTaskPoints).coerceAtLeast(0)
+
+    /** 它自己还能做完的缺口 */
+    val autoRemaining: Int get() = videoPending + documentPending + quizPending
 
     /** 全绿：没有待完成任务点 */
     val allGreen: Boolean get() = remaining == 0
@@ -46,27 +55,48 @@ data class CourseAudit(
     /** 只差本人出手了（自动能做的都做完了） */
     val onlyHumanLeft: Boolean get() = remaining == 0 && humanPending > 0
 
-    /** 首页/通知用的一句话 */
+    /** 首页/通知用的一句话；两个数绝不混着报（章节数 ≠ 任务点数） */
     fun headline(): String = when {
         allGreen && humanPending == 0 -> "$courseTitle：已全绿"
-        allGreen -> "$courseTitle：它能做的都做完了，还有 $humanPending 处要你本人"
+        allGreen -> "$courseTitle：它能做的都做完了，还有 $humanPending 个任务点要你本人"
         else -> buildString {
             append(courseTitle).append("：还差 ").append(remaining).append(" 个任务点")
             val parts = mutableListOf<String>()
-            if (videoPending > 0) parts.add("视频 $videoPending 章")
-            if (quizPending > 0) parts.add("测验约 $quizPending 份")
+            if (videoPending > 0) parts.add("视频 $videoPending")
+            if (documentPending > 0) parts.add("文档 $documentPending")
+            if (quizPending > 0) parts.add("测验 $quizPending")
             if (humanPending > 0) parts.add("需你本人 $humanPending")
             if (parts.isNotEmpty()) append("（").append(parts.joinToString(" · ")).append("）")
         }
     }
 }
 
-/** 单章的检查输入：任务点检查结果 + 这章里找到的测验份数 */
+/** 课程页逐章列表的一行：数据全部来自体检，不额外请求 */
+data class ChapterRow(
+    val title: String,
+    val total: Int,
+    val done: Int,
+    val state: State
+) {
+    enum class State {
+        /** 已完成：icon_yiwanc 优先，其次该章任务点全完成 */
+        DONE,
+
+        /** 还没做完 */
+        TODO,
+
+        /** 章节未开放 */
+        LOCKED,
+
+        /** 没检查到 */
+        UNCHECKED
+    }
+}
+
+/** 单章的检查输入：这章的任务点检查结果 */
 data class ChapterAuditInput(
     val chapterTitle: String,
-    val check: ChapterCheck?,
-    /** null = 还没去数测验 */
-    val quizJobs: Int?
+    val check: ChapterCheck?
 )
 
 /**
@@ -83,52 +113,73 @@ object CourseAuditCalculator {
         var taskPoints = 0
         var donePoints = 0
         var videoPending = 0
+        var documentPending = 0
         var quizPending = 0
         var humanPending = 0
         var checked = 0
         val gaps = mutableListOf<CourseAudit.Gap>()
+        val rows = mutableListOf<ChapterRow>()
 
         for (ch in chapters) {
             val check = ch.check
             if (check == null) {
+                rows.add(ChapterRow(ch.chapterTitle, 0, 0, ChapterRow.State.UNCHECKED))
                 gaps.add(CourseAudit.Gap(CourseAudit.Kind.UNKNOWN, ch.chapterTitle, "这章没检查到，可能没开放"))
-            } else {
+                continue
+            }
+            if (check.notOpen) {
                 checked++
+                rows.add(ChapterRow(ch.chapterTitle, check.allTasks, check.allDone, ChapterRow.State.LOCKED))
+                gaps.add(CourseAudit.Gap(CourseAudit.Kind.HUMAN, ch.chapterTitle, "章节未开放"))
+                humanPending += (check.allTasks - check.allDone).coerceAtLeast(1)
                 taskPoints += check.allTasks
                 donePoints += check.allDone
+                continue
+            }
 
-                if (check.notOpen) {
-                    gaps.add(CourseAudit.Gap(CourseAudit.Kind.HUMAN, ch.chapterTitle, "章节未开放"))
-                    humanPending += (check.allTasks - check.allDone).coerceAtLeast(0).coerceAtLeast(1)
-                    continue
-                }
-                if (check.allComplete) continue
+            checked++
+            taskPoints += check.allTasks
+            donePoints += check.allDone
+            rows.add(
+                ChapterRow(
+                    title = ch.chapterTitle,
+                    total = check.allTasks,
+                    done = check.allDone,
+                    state = if (check.allComplete) ChapterRow.State.DONE else ChapterRow.State.TODO
+                )
+            )
+            if (check.allComplete) continue
 
-                val videoLeft = (check.videoTasks - check.videoDone).coerceAtLeast(0)
-                if (videoLeft > 0) {
-                    videoPending++
-                    gaps.add(CourseAudit.Gap(CourseAudit.Kind.VIDEO, ch.chapterTitle, "视频还差 $videoLeft 个"))
-                }
-
-                // 非视频的任务点：章节测验 / 作业 / 考试 / 要上传的东西
-                val otherLeft = (check.allTasks - check.allDone) - videoLeft
-                if (otherLeft > 0) {
-                    val quiz = (ch.quizJobs ?: 0).coerceAtMost(otherLeft)
-                    if (quiz > 0) {
-                        quizPending += quiz
-                        gaps.add(CourseAudit.Gap(CourseAudit.Kind.QUIZ, ch.chapterTitle, "章节测验 $quiz 份"))
-                    }
-                    val rest = otherLeft - quiz
-                    if (rest > 0) {
-                        humanPending += rest
-                        gaps.add(
-                            CourseAudit.Gap(
-                                CourseAudit.Kind.HUMAN, ch.chapterTitle,
-                                "$rest 个任务点要你自己做（作业/考试/上传，它不代做）"
-                            )
-                        )
-                    }
-                }
+            if (check.videoLeft > 0) {
+                videoPending += check.videoLeft
+                gaps.add(CourseAudit.Gap(CourseAudit.Kind.VIDEO, ch.chapterTitle, "视频还差 ${check.videoLeft} 个"))
+            }
+            if (check.documentLeft > 0) {
+                documentPending += check.documentLeft
+                gaps.add(
+                    CourseAudit.Gap(CourseAudit.Kind.DOCUMENT, ch.chapterTitle, "文档还差 ${check.documentLeft} 个")
+                )
+            }
+            if (check.quizLeft > 0) {
+                quizPending += check.quizLeft
+                gaps.add(CourseAudit.Gap(CourseAudit.Kind.QUIZ, ch.chapterTitle, "章节测验 ${check.quizLeft} 份"))
+            }
+            val human = check.humanLeft
+            if (human > 0) {
+                humanPending += human
+                gaps.add(
+                    CourseAudit.Gap(
+                        CourseAudit.Kind.HUMAN, ch.chapterTitle,
+                        buildString {
+                            append(human).append(" 个任务点它不代做")
+                            val kinds = mutableListOf<String>()
+                            check.otherWorks.forEach { (t, n) -> kinds.add("worktype=$t × $n") }
+                            check.unknownTasks.forEach { (t, n) -> kinds.add("type=$t × $n") }
+                            if (check.audioLeft > 0) kinds.add("音频 × ${check.audioLeft}")
+                            if (kinds.isNotEmpty()) append("（").append(kinds.joinToString("，")).append("）")
+                        }
+                    )
+                )
             }
         }
 
@@ -138,9 +189,11 @@ object CourseAuditCalculator {
             taskPoints = taskPoints,
             doneTaskPoints = donePoints,
             videoPending = videoPending,
+            documentPending = documentPending,
             quizPending = quizPending,
             humanPending = humanPending,
             gaps = gaps,
+            chapterRows = rows,
             chapters = chapters.size,
             checkedChapters = checked,
             auditedAt = auditedAt

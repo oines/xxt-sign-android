@@ -22,13 +22,23 @@ object CourseAuditStore {
         if (accountId.isBlank() || !::sp.isInitialized) return
         val arr = JSONArray()
         audits.forEach { a ->
+            val rows = JSONArray()
+            a.chapterRows.forEach { r ->
+                rows.put(
+                    JSONObject()
+                        .put("t", r.title).put("d", r.done).put("n", r.total)
+                        .put("s", r.state.name)
+                )
+            }
             arr.put(
                 JSONObject()
                     .put("courseId", a.courseId).put("courseTitle", a.courseTitle)
                     .put("taskPoints", a.taskPoints).put("doneTaskPoints", a.doneTaskPoints)
                     .put("videoPending", a.videoPending).put("quizPending", a.quizPending)
+                    .put("documentPending", a.documentPending)
                     .put("humanPending", a.humanPending).put("chapters", a.chapters)
                     .put("checkedChapters", a.checkedChapters).put("auditedAt", a.auditedAt)
+                    .put("rows", rows)
             )
         }
         sp.edit().putString(accountId, arr.toString()).apply()
@@ -48,8 +58,21 @@ object CourseAuditStore {
                     taskPoints = o.optInt("taskPoints"),
                     doneTaskPoints = o.optInt("doneTaskPoints"),
                     videoPending = o.optInt("videoPending"),
+                    documentPending = o.optInt("documentPending"),
                     quizPending = o.optInt("quizPending"),
                     humanPending = o.optInt("humanPending"),
+                    chapterRows = o.optJSONArray("rows")?.let { rows ->
+                        (0 until rows.length()).mapNotNull { i ->
+                            val r = rows.optJSONObject(i) ?: return@mapNotNull null
+                            ChapterRow(
+                                title = r.optString("t"),
+                                total = r.optInt("n"),
+                                done = r.optInt("d"),
+                                state = runCatching { ChapterRow.State.valueOf(r.optString("s")) }
+                                    .getOrDefault(ChapterRow.State.UNCHECKED)
+                            )
+                        }
+                    } ?: emptyList(),
                     chapters = o.optInt("chapters"),
                     checkedChapters = o.optInt("checkedChapters"),
                     auditedAt = o.optLong("auditedAt")

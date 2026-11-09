@@ -55,7 +55,18 @@ class QuizAutoRunner(
                 if (results.size >= maxQuizzes) break@outer
                 scannedChapters++
                 val jobs = runCatching { studyApi.getWorkJobs(course, ch) }.getOrDefault(emptyList())
-                for (job in jobs) {
+                // 只做 workA（随堂测验）；其它 worktype 不猜，报出来交给人
+                val quizzes = jobs.filter { it.isQuiz }
+                val others = jobs - quizzes.toSet()
+                if (others.isNotEmpty()) {
+                    log(
+                        "[测验] ${ch.title}：${others.size} 个 work 不是 workA（" +
+                            others.map { it.worktype.ifBlank { "(空)" } }.distinct().joinToString(",") +
+                            "），不自动作答",
+                        false
+                    )
+                }
+                for (job in quizzes) {
                     if (results.size >= maxQuizzes) break@outer
                     if (QuizHandledStore.isHandled(accountId, job.key)) continue
                     val r = runCatching { engine.run(job) }.getOrElse {

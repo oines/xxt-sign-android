@@ -11,6 +11,9 @@
     <color name="ok">#7BC67E</color>
     <color name="err">#F28B82</color>
 
+    <color name="progress_track">#3A403E</color>
+    <color name="chapter_running_bg">#24322E</color>
+
     <color name="btn_bg_enabled">#2A8A73</color>
     <color name="btn_bg_disabled">#3C4442</color>
     <color name="btn_text_enabled">#FFFFFF</color>

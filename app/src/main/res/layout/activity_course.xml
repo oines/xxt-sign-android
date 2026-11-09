@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
+    xmlns:tools="http://schemas.android.com/tools"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:orientation="vertical">
@@ -17,19 +18,26 @@
         android:id="@+id/tvProgressText"
         android:layout_marginStart="16dp"
         android:layout_marginEnd="16dp"
-        android:layout_marginTop="16dp"
+        android:layout_marginTop="14dp"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:textColor="@color/muted"
-        android:textSize="14sp" />
+        android:textSize="13sp"
+        tools:text="任务点 0/392 · 0%" />
 
+    <!-- 进度条：0% 就画 0%，不许出现「满格但数字是 0」 -->
     <com.google.android.material.progressindicator.LinearProgressIndicator
         android:id="@+id/progress"
         android:layout_marginStart="16dp"
         android:layout_marginEnd="16dp"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:layout_marginTop="10dp" />
+        android:layout_marginTop="6dp"
+        app:indicatorColor="@color/primary"
+        app:trackColor="@color/progress_track"
+        app:trackCornerRadius="3dp"
+        app:trackStopIndicatorSize="0dp"
+        app:trackThickness="6dp" />
 
     <TextView
         android:id="@+id/tvStateLine"
@@ -37,7 +45,7 @@
         android:layout_marginEnd="16dp"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:layout_marginTop="12dp"
+        android:layout_marginTop="10dp"
         android:text="没在跑"
         android:textSize="15sp" />
 
@@ -57,10 +65,31 @@
         android:layout_marginStart="16dp"
         android:layout_marginEnd="16dp"
         android:layout_width="match_parent"
-        android:layout_height="56dp"
-        android:layout_marginTop="20dp"
+        android:layout_height="52dp"
+        android:layout_marginTop="12dp"
         android:insetTop="0dp"
         android:insetBottom="0dp"
         android:text="开始"
         android:textSize="16sp" />
+
+    <TextView
+        android:id="@+id/tvChapterHeader"
+        android:layout_marginStart="16dp"
+        android:layout_marginEnd="16dp"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="16dp"
+        android:textColor="@color/muted"
+        android:textSize="12sp"
+        tools:text="逐章进度 · 12/91 章已完成" />
+
+    <androidx.recyclerview.widget.RecyclerView
+        android:id="@+id/listChapters"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:layout_marginTop="6dp"
+        android:clipToPadding="false"
+        android:paddingBottom="16dp"
+        android:scrollbars="vertical" />
 </LinearLayout>

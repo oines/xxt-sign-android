@@ -17,10 +17,12 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
@@ -29,8 +31,12 @@ import java.util.concurrent.atomic.AtomicBoolean
  * 为什么是队列：多门课同时跑等于同时打十几个请求，风控第一个抓的就是这个。
  * 所以**串行，并发 1**，后点的排队等前面的跑完。
  *
- * 顺序：体检（还差什么）→ 文档任务点（一次 GET 就完成）→ 视频 → 章节测验。
- * 用户只看得到三句话：正在刷视频 / 正在做测验 / 等你到教室签个到。
+ * 顺序：体检（还差什么）→ 文档任务点（一次 GET 就完成）→ 视频 → 章节测验 → 再体检。
+ *
+ * 流水线两条铁律（真机踩出来的）：
+ *  - **每个阶段都要能被超时打断**：单项 15s、整段有预算，超时就跳过并写原因，
+ *    绝不能让用户看到「转圈四分钟、一条日志都没有」。
+ *  - **阶段之间不互相等**：文档没活就直接过，视频跑完就进测验，测验完就重新体检。
  */
 object CourseRunQueue {
 
@@ -45,6 +51,8 @@ object CourseRunQueue {
         /** 已完成/总任务点（按带 jobid 的 attachment 口径） */
         val donePoints: Int = 0,
         val totalPoints: Int = 0,
+        /** 正在跑的那一章（课程页列表高亮用） */
+        val currentChapter: String = "",
         /** 需要你本人做的事，空 = 没有 */
         val needsYou: String = ""
     ) {
@@ -60,6 +68,15 @@ object CourseRunQueue {
     private var scope: CoroutineScope? = null
     private var worker: kotlinx.coroutines.Job? = null
     private val busy = AtomicBoolean(false)
+
+    /** 单项（一个文档任务点）最多等多久，超时跳过 */
+    private const val PER_ITEM_TIMEOUT_MS = 15_000L
+
+    /** 整段文档阶段的预算：到点就带着进度往下走，不阻塞视频和测验 */
+    private const val DOC_STAGE_BUDGET_MS = 10 * 60 * 1000L
+
+    /** 视频阶段心跳：每这么久刷一次状态行，让用户知道它没死 */
+    private const val VIDEO_HEARTBEAT_MS = 5_000L
 
     fun stateOf(courseKey: String): State? = _states.value[courseKey]
 
@@ -142,7 +159,7 @@ object CourseRunQueue {
     private suspend fun runOne(accountId: String, course: StudyCourse) {
         val key = course.key
         val account = AccountStore.get(accountId) ?: return
-        update(key) { it.copy(phase = Phase.AUDIT, message = "正在看看还差什么") }
+        update(key) { it.copy(phase = Phase.AUDIT, message = "正在看看还差什么", currentChapter = "") }
 
         val (session, err) = SignEngine.sessionFor(account)
         if (session == null) {
@@ -156,8 +173,10 @@ object CourseRunQueue {
             return
         }
 
-        // 1) 体检：知道这门课还差几个任务点
-        val audit = CourseAuditor(api).audit(course, chapters) { update(key) { s -> s.copy(message = it) } }
+        // 1) 体检：知道这门课还差几个任务点（同时拿到待做文档、视频章、测验章）
+        val audit = CourseAuditor(api).audit(course, chapters) { msg ->
+            update(key) { s -> s.copy(message = msg) }
+        }
         update(key) {
             it.copy(
                 donePoints = audit.audit.doneTaskPoints,
@@ -166,24 +185,20 @@ object CourseRunQueue {
             )
         }
 
-        // 2) 文档任务点：一次 GET 就完成，先捡这些便宜
+        // 2) 文档任务点：目标带着 jtoken 直接从体检结果来，不再翻一遍 cards 页
         if (Settings.studyDocuments) {
-            update(key) { it.copy(phase = Phase.DOCUMENT, message = "正在把文档任务点做掉") }
-            val docs = chapters.filterNot { it.finished }
-            var done = 0
-            for (ch in docs) {
-                val jobs = runCatching { api.getDocumentJobs(course, ch) }.getOrDefault(emptyList())
-                for (job in jobs) {
-                    if (runCatching { api.completeDocument(course, ch, job) }.getOrDefault(false)) done++
-                }
-            }
-            if (done > 0) LogStore.add("[课程] ${course.title}：完成 $done 个文档任务点", true)
+            runDocuments(key, course, api, audit.documents)
+        } else {
+            LogStore.add("[文档] 设置里关了文档任务点，跳过", true)
         }
 
-        // 3) 视频：交给现有刷课引擎（并发按设置，默认 1）
-        val videoChapters = audit.videoChapters.ifEmpty { chapters.filter { !it.finished } }
+        // 3) 视频：交给现有刷课引擎（并发按设置，默认 1），带心跳
+        val videoChapters = audit.videoChapters.ifEmpty { chapters.filter { !it.finished && !it.needUnlock } }
         if (videoChapters.isNotEmpty()) {
-            update(key) { it.copy(phase = Phase.VIDEO, message = "正在刷视频") }
+            update(key) {
+                it.copy(phase = Phase.VIDEO, message = "正在刷视频 0/${videoChapters.size} 章")
+            }
+            LogStore.add("[课程] ${course.title}：开始刷 ${videoChapters.size} 章视频", true)
             StudyManager.plan = StudyPlan(
                 accountId = accountId,
                 courses = listOf(course),
@@ -192,20 +207,26 @@ object CourseRunQueue {
                 speed = Settings.studySpeed
             )
             StudyManager.start()
-            // 等这一门的视频跑完（串行队列就是这样）
-            while (StudyManager.isRunning()) {
-                kotlinx.coroutines.delay(1000)
-            }
+            waitForVideo(key)
+        } else {
+            LogStore.add("[课程] ${course.title}：没有待刷视频，跳过", true)
         }
 
-        // 4) 章节测验
-        update(key) { it.copy(phase = Phase.QUIZ, message = "正在做测验") }
-        runCatching { runQuiz(account, course, api) }
+        // 4) 章节测验（只有 workA；其它 worktype 不猜，留给体检报出来）
+        update(key) { it.copy(phase = Phase.QUIZ, message = "正在做章节测验", currentChapter = "") }
+        if (audit.quizChapters.isEmpty()) {
+            LogStore.add("[测验] ${course.title}：没有待做测验，跳过", true)
+        } else {
+            LogStore.add(
+                "[测验] ${course.title}：${audit.quizChapters.size} 章共 ${audit.audit.quizPending} 份 workA 测验要交",
+                true
+            )
+            runCatching { runQuiz(account, course, api) }
+                .onFailure { LogStore.add("[测验] ${course.title} 测验阶段出错：${it.message}", false) }
+        }
 
-        // 5) 收尾：再体检一次，把「还差什么」刷新到最新
-        val after = runCatching {
-            CourseAuditor(api).audit(course, chapters) {}
-        }.getOrNull()
+        // 5) 收尾：再体检一次，把「还差什么」刷新到最新（用户验收就看这个数）
+        val after = runCatching { CourseAuditor(api).audit(course, chapters) {} }.getOrNull()
         val latest = after?.audit ?: audit.audit
         val merged = CourseAuditStore.load(accountId).filterNot { it.courseId == course.courseId } + latest
         CourseAuditStore.save(accountId, merged)
@@ -216,14 +237,117 @@ object CourseRunQueue {
                 donePoints = latest.doneTaskPoints,
                 totalPoints = latest.taskPoints,
                 needsYou = humanText(latest),
+                currentChapter = "",
                 message = when {
-                    latest.allGreen && latest.humanPending == 0 -> "这门课全绿了"
-                    latest.allGreen -> "它能做的都做完了，剩下要你本人"
-                    else -> "这一轮跑完了，还差 ${latest.remaining} 个任务点"
+                    latest.allGreen && latest.humanPending == 0 -> "这门课全绿了（${latest.doneTaskPoints}/${latest.taskPoints} 任务点）"
+                    latest.allGreen -> "它能做的都做完了，还有 ${latest.humanPending} 个任务点要你本人"
+                    else -> "这一轮跑完了，还差 ${latest.remaining} 个任务点（视频 ${latest.videoPending} · 测验 ${latest.quizPending}）"
                 }
             )
         }
         LogStore.add("[课程] ${course.title}：${_states.value[key]?.message.orEmpty()}", latest.allGreen)
+    }
+
+    /**
+     * 文档阶段。
+     *
+     * 每个任务点：开始/结果都写日志，单项 15s 超时就跳过，整段最多 [DOC_STAGE_BUDGET_MS]。
+     * 一条待办都没有时立刻往下走 —— 之前这里会对着空的卡片页翻 61 页 × 91 章，
+     * 用户看到的就是「正在把文档任务点做掉」卡四分钟、零日志。
+     */
+    private suspend fun runDocuments(
+        key: String,
+        course: StudyCourse,
+        api: StudyApi,
+        targets: List<CourseAuditor.DocTarget>
+    ) {
+        if (targets.isEmpty()) {
+            LogStore.add("[文档] ${course.title}：没有待办文档，直接进下一步", true)
+            update(key) { it.copy(message = "没有待办文档，直接进下一步") }
+            return
+        }
+        update(key) { it.copy(phase = Phase.DOCUMENT, message = "正在把文档任务点做掉 0/${targets.size}") }
+        LogStore.add("[文档] ${course.title}：待办 ${targets.size} 个，开始", true)
+
+        var done = 0
+        var already = 0
+        var failed = 0
+        var timedOut = 0
+        val startedAt = System.currentTimeMillis()
+
+        for ((i, t) in targets.withIndex()) {
+            if (System.currentTimeMillis() - startedAt > DOC_STAGE_BUDGET_MS) {
+                val rest = targets.size - i
+                LogStore.add("[文档] 整段超预算（${DOC_STAGE_BUDGET_MS / 60000} 分钟），跳过剩下 $rest 个，继续下一步", false)
+                break
+            }
+            val tag = "${i + 1}/${targets.size}"
+            update(key) {
+                it.copy(
+                    phase = Phase.DOCUMENT,
+                    message = "正在把文档任务点做掉 $tag · ${t.job.name}",
+                    currentChapter = t.chapter.title
+                )
+            }
+            LogStore.add("[文档] $tag 开始：${t.chapter.title} · ${t.job.name}", true)
+            val r = withTimeoutOrNull(PER_ITEM_TIMEOUT_MS) { api.completeDocument(course, t.chapter, t.job) }
+            when (r) {
+                null -> {
+                    timedOut++
+                    LogStore.add("[文档] $tag 超时 ${PER_ITEM_TIMEOUT_MS / 1000}s，跳过：${t.job.name}", false)
+                }
+                DocumentResult.DONE -> {
+                    done++
+                    LogStore.add("[文档] $tag 完成：${t.job.name}", true)
+                }
+                DocumentResult.ALREADY -> {
+                    already++
+                    LogStore.add("[文档] $tag 早已完成：${t.job.name}", true)
+                }
+                DocumentResult.FAILED -> {
+                    failed++
+                    LogStore.add("[文档] $tag 失败：${t.job.name}", false)
+                }
+            }
+            if ((i + 1) % 10 == 0 || i == targets.lastIndex) {
+                LogStore.add(
+                    "[文档] 进度 ${i + 1}/${targets.size}：完成 $done · 早已完成 $already · 失败 $failed · 超时 $timedOut",
+                    failed == 0 && timedOut == 0
+                )
+            }
+        }
+
+        LogStore.add(
+            "[文档] ${course.title} 阶段结束：完成 $done · 早已完成 $already · 失败 $failed · 超时 $timedOut" +
+                "（用时 ${(System.currentTimeMillis() - startedAt) / 1000}s）",
+            failed == 0 && timedOut == 0
+        )
+        update(key) { it.copy(message = "文档：完成 $done，早已完成 $already，失败 $failed，超时 $timedOut") }
+    }
+
+    /** 视频阶段：不轮询等待空转，只做心跳，同时保证编解码器停了能自己退出 */
+    private suspend fun waitForVideo(key: String) {
+        var lastLog = 0L
+        while (StudyManager.isRunning()) {
+            val st = StudyManager.state.value
+            val head = "正在刷视频 ${st.doneChapters}/${st.totalChapters}"
+            val now = System.currentTimeMillis()
+            update(key) {
+                it.copy(
+                    phase = Phase.VIDEO,
+                    message = listOf(head, st.current.takeIf { c -> c.isNotBlank() }.orEmpty())
+                        .filter { s -> s.isNotBlank() }.joinToString(" · "),
+                    currentChapter = st.current
+                )
+            }
+            if (now - lastLog > 120_000) {
+                lastLog = now
+                LogStore.add("[课程] $head${if (st.current.isBlank()) "" else " · ${st.current}"}", true)
+            }
+            delay(VIDEO_HEARTBEAT_MS)
+        }
+        val st = StudyManager.state.value
+        LogStore.add("[课程] 视频阶段结束：${st.status}（${st.doneChapters}/${st.totalChapters} 章）", st.failedTasks == 0)
     }
 
     private suspend fun runQuiz(
@@ -263,10 +387,14 @@ object CourseRunQueue {
             log = { msg, ok -> LogStore.add(msg, ok) }
         )
         val runner = QuizAutoRunner(account.id, studyApi, WorkApi(session), engine)
-        val pass = runner.patrol(listOf(course), maxCourses = 1, maxQuizzes = 8, maxChaptersPerCourse = 40)
+        val pass = runner.patrol(listOf(course), maxCourses = 1, maxQuizzes = 80, maxChaptersPerCourse = CourseAuditor.MAX_CHAPTERS)
         if (pass.results.isNotEmpty()) {
             val submitted = pass.results.count { it.submitted }
-            LogStore.add("[课程] ${course.title}：本轮提交 $submitted 份测验", submitted > 0)
+            val human = pass.pendingHuman
+            LogStore.add(
+                "[课程] ${course.title}：本轮提交 $submitted 份测验" + if (human > 0) "，$human 份需人工" else "",
+                submitted > 0 && human == 0
+            )
         }
     }
 
@@ -281,15 +409,18 @@ object CourseRunQueue {
         )
     }
 
-    /** 「需要你本人」只用一句人话，别把任务点/接口名漏给用户 */
+    /**
+     * 「需要你本人」只用一句人话，别把任务点/接口名漏给用户。
+     * 也不再断言「作业或考试」—— 类型是 worktype 决定的，没确认过的类型不猜。
+     */
     private fun humanText(audit: CourseAudit): String = when {
         audit.humanPending <= 0 -> ""
         else -> {
             val gap = audit.gaps.firstOrNull { it.kind == CourseAudit.Kind.HUMAN }
             when {
-                gap == null -> "有 ${audit.humanPending} 处要你本人处理"
+                gap == null -> "有 ${audit.humanPending} 个任务点要你本人处理"
                 gap.detail.contains("未开放") -> "有一章还没开放，开了再跑"
-                else -> "${gap.chapterTitle}：作业或考试要你自己做"
+                else -> "${gap.chapterTitle}：${audit.humanPending} 个任务点它不代做，得你自己来"
             }
         }
     }
