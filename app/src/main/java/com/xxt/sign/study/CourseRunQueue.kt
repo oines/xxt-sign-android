@@ -193,7 +193,8 @@ object CourseRunQueue {
         }
 
         // 3) 视频：交给现有刷课引擎（并发按设置，默认 1），带心跳
-        val videoChapters = audit.videoChapters.ifEmpty { chapters.filter { !it.finished && !it.needUnlock } }
+        // 只用体检结论：体检说没有视频缺口，就是真的没有，不要拿「未完成章节」再猜一遍
+        val videoChapters = audit.videoChapters
         if (videoChapters.isNotEmpty()) {
             update(key) {
                 it.copy(phase = Phase.VIDEO, message = "正在刷视频 0/${videoChapters.size} 章")
@@ -207,7 +208,7 @@ object CourseRunQueue {
                 speed = Settings.studySpeed
             )
             StudyManager.start()
-            waitForVideo(key)
+            waitForVideo(key, course)
         } else {
             LogStore.add("[课程] ${course.title}：没有待刷视频，跳过", true)
         }
@@ -326,18 +327,19 @@ object CourseRunQueue {
     }
 
     /** 视频阶段：不轮询等待空转，只做心跳，同时保证编解码器停了能自己退出 */
-    private suspend fun waitForVideo(key: String) {
+    private suspend fun waitForVideo(key: String, course: StudyCourse) {
         var lastLog = 0L
         while (StudyManager.isRunning()) {
             val st = StudyManager.state.value
+            // StudyState.current 是「课程 · 章名」，拆出章名给逐章列表高亮用
+            val chapterTitle = st.current.removePrefix("${course.title} · ").takeIf { it != st.current }.orEmpty()
             val head = "正在刷视频 ${st.doneChapters}/${st.totalChapters}"
             val now = System.currentTimeMillis()
             update(key) {
                 it.copy(
                     phase = Phase.VIDEO,
-                    message = listOf(head, st.current.takeIf { c -> c.isNotBlank() }.orEmpty())
-                        .filter { s -> s.isNotBlank() }.joinToString(" · "),
-                    currentChapter = st.current
+                    message = listOf(head, chapterTitle).filter { s -> s.isNotBlank() }.joinToString(" · "),
+                    currentChapter = chapterTitle
                 )
             }
             if (now - lastLog > 120_000) {
