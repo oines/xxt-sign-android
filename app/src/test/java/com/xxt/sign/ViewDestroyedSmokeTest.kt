@@ -27,14 +27,14 @@ class ViewDestroyedSmokeTest {
         assertNotNull(activity)
 
         // 逐个 tab 切一遍：每个页面都会在自己的 lifecycleScope 里起任务
-        listOf(R.id.nav_accounts, R.id.nav_home)
+        listOf(R.id.nav_accounts, R.id.nav_sign, R.id.nav_study, R.id.nav_quiz, R.id.nav_log)
             .forEach { id ->
                 activity.findViewById<com.google.android.material.bottomnavigation.BottomNavigationView>(R.id.bottomNav)
                     .selectedItemId = id
                 shadowOf(activity.mainLooper).idle()
             }
 
-        // 切到账号页再回首页：这些页面同样会在协程里更新视图
+        // 切到账号页再回做题页：这些页面同样会在协程里更新视图
         activity.findViewById<com.google.android.material.bottomnavigation.BottomNavigationView>(R.id.bottomNav)
             .selectedItemId = R.id.nav_accounts
         shadowOf(activity.mainLooper).idle()
@@ -53,9 +53,8 @@ class ViewDestroyedSmokeTest {
     /**
      * 直接复现崩溃点：视图销毁后，异步回调再去写 binding。
      *
-     * 扫描协程被取消时 finally 仍会执行（setBusy / 进度条），这时 _b 已经是 null。
-     * 这里把 QuizFragment 的视图建起来又销毁掉，再逐个调用那些「回调里会走到」的方法，
-     * 任何一个没做空视图保护都会抛 NullPointerException。
+     * 做题页在账号/进度 Flow 回调里会刷新界面；这里把视图建起来又销毁掉，
+     * 再逐个调用那些「回调里会走到」的方法，任何一个没做空视图保护都会抛。
      */
     @Test
     fun asyncCallbacksAfterViewDestroyedDoNotThrow() {
@@ -63,23 +62,22 @@ class ViewDestroyedSmokeTest {
         val activity = controller.get()
         val fm = activity.supportFragmentManager
 
-        // 直接挂一个首页：它在协程/回调里会刷新列表与「要你处理」
-        val home = com.xxt.sign.ui.HomeFragment()
-        fm.beginTransaction().add(R.id.container, home, "home_probe").commitNow()
+        val quiz = com.xxt.sign.ui.QuizFragment()
+        fm.beginTransaction().add(R.id.container, quiz, "quiz_probe").commitNow()
         shadowOf(activity.mainLooper).idle()
-        assertNotNull(home.view)
+        assertNotNull(quiz.view)
 
         // 模拟「任务还没跑完就切夜间模式/退出」：视图先销毁
         controller.pause().stop().destroy()
         shadowOf(activity.mainLooper).idle()
-        assertNull("视图应该已经销毁", home.view)
+        assertNull("视图应该已经销毁", quiz.view)
 
         // 这些就是回调里会碰 binding 的方法，视图没了也必须能安全返回
-        listOf("render", "renderCourses", "renderHuman").forEach { name ->
-            val m = home.javaClass.getDeclaredMethod(name)
+        listOf("refreshAccount", "updateHeader").forEach { name ->
+            val m = quiz.javaClass.getDeclaredMethod(name)
             m.isAccessible = true
             try {
-                m.invoke(home)
+                m.invoke(quiz)
             } catch (e: java.lang.reflect.InvocationTargetException) {
                 throw AssertionError("$name 在视图销毁后崩了：${e.targetException}", e.targetException)
             }

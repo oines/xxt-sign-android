@@ -1,15 +1,14 @@
 package com.xxt.sign
 
 import android.os.Bundle
-import androidx.lifecycle.lifecycleScope
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 import androidx.appcompat.app.AppCompatActivity
 import androidx.fragment.app.Fragment
 import com.xxt.sign.databinding.ActivityMainBinding
 import com.xxt.sign.ui.AccountsFragment
-import com.xxt.sign.ui.HomeFragment
 import com.xxt.sign.ui.LogFragment
+import com.xxt.sign.ui.QuizFragment
+import com.xxt.sign.ui.SignFragment
+import com.xxt.sign.ui.StudyFragment
 
 class MainActivity : AppCompatActivity() {
 
@@ -21,186 +20,58 @@ class MainActivity : AppCompatActivity() {
         setContentView(binding.root)
 
         binding.bottomNav.setOnItemSelectedListener { item ->
-            val route = when (item.itemId) {
-                R.id.nav_home -> Route.HOME
-                R.id.nav_accounts -> Route.ACCOUNTS
-                else -> return@setOnItemSelectedListener false
-            }
-            showTab(route)
+            showTab(item.itemId)
             true
         }
 
-        // 底部高亮必须由 Route 反推，别处直接 showTab 之后也能点回同一个 tab
-        binding.bottomNav.setOnItemReselectedListener { item -> routeOf(item.itemId)?.let { showTab(it) } }
+        // 先放第一个页面，再设置选中项；showTab 用 tag 查找保证幂等
+        showTab(R.id.nav_accounts)
+        binding.bottomNav.selectedItemId = R.id.nav_accounts
+    }
 
-        // 日志是二级页：按返回键应该回首页，不能直接退出 App
-        // （真机上从日志页返回会直接回桌面，还会把桌面搜索框唤醒）
-        onBackPressedDispatcher.addCallback(this, object : androidx.activity.OnBackPressedCallback(true) {
-            override fun handleOnBackPressed() {
-            if (currentRoute == Route.LOG || currentRoute == Route.SIGN_RECORDS) {
-                binding.bottomNav.selectedItemId = R.id.nav_home
-                showTab(Route.HOME)
-            } else {
-                finish()
-            }
-            }
-        })
-
-        // 冷启动落在首页（结果面板）；旋转/换主题后回到原来那一页
-        val restored = savedInstanceState?.getString(KEY_ROUTE)
-            ?.let { name -> Route.entries.firstOrNull { it.name == name } }
-            ?: Route.HOME
-        showTab(restored)
-        // 日志页在底栏里没有对应项，别去动选中态（否则会触发监听把内容切走）
-        if (restored != Route.LOG) binding.bottomNav.selectedItemId = idOf(restored)
-
-        // 右上角：设置 / 刷新课程 / 日志，界面上不摆第二个按钮
-        binding.toolbar.inflateMenu(R.menu.menu_main)
-        binding.toolbar.setOnMenuItemClickListener { item ->
-            when (item.itemId) {
-                R.id.action_settings -> {
-                    val home = supportFragmentManager.findFragmentByTag(Route.HOME.tag)
-                    if (home != null) {
-                        com.xxt.sign.ui.QuizSettingsDialog.show(home)
-                    } else {
-                        showTab(Route.HOME)
-                        supportFragmentManager.executePendingTransactions()
-                        supportFragmentManager.findFragmentByTag(Route.HOME.tag)
-                            ?.let { com.xxt.sign.ui.QuizSettingsDialog.show(it) }
-                    }
-                    true
-                }
-                R.id.action_refresh -> {
-                    refreshCourses()
-                    true
-                }
-                R.id.action_sign_records -> {
-                    showTab(Route.SIGN_RECORDS)
-                    true
-                }
-                R.id.action_logs -> {
-                    openLogs()
-                    true
-                }
-                else -> false
-            }
+    /** 用 tag 查找已存在的 Fragment，避免重建时重复 add；commitNow 保证同步生效 */
+    private fun showTab(itemId: Int) {
+        val tag = when (itemId) {
+            R.id.nav_accounts -> TAG_ACCOUNTS
+            R.id.nav_sign -> TAG_SIGN
+            R.id.nav_study -> TAG_STUDY
+            R.id.nav_quiz -> TAG_QUIZ
+            R.id.nav_log -> TAG_LOG
+            else -> return
         }
-    }
 
-    private var currentRoute: Route = Route.HOME
-
-    /** 供其它页面跳 tab（例如刷课页的「章节测验」按钮） */
-    fun openTab(itemId: Int) {
-        val id = when (itemId) {
-            R.id.nav_home, R.id.nav_accounts -> itemId
-            else -> R.id.nav_home
+        binding.toolbar.title = when (itemId) {
+            R.id.nav_accounts -> getString(R.string.tab_accounts)
+            R.id.nav_sign -> getString(R.string.tab_sign)
+            R.id.nav_study -> getString(R.string.tab_study)
+            R.id.nav_quiz -> getString(R.string.tab_quiz)
+            else -> getString(R.string.tab_log)
         }
-        binding.bottomNav.selectedItemId = id
-    }
-
-    /** 首次进首页自动刷一次：不弹 toast，不打扰 */
-    fun refreshCoursesSilently() {
-        val account = com.xxt.sign.core.AccountStore.get(com.xxt.sign.core.Settings.studyAccountId) ?: return
-        lifecycleScope.launch {
-            withContext(kotlinx.coroutines.Dispatchers.IO) {
-                runCatching {
-                    val session = com.xxt.sign.sign.SignEngine.sessionFor(account).first
-                        ?: return@runCatching
-                    val api = com.xxt.sign.study.StudyApi(session)
-                    val courses = api.getCourses()
-                    val chapters = mutableMapOf<String, List<com.xxt.sign.study.StudyChapter>>()
-                    courses.forEach { c ->
-                        chapters[c.key] = runCatching { api.getChapters(c) }.getOrDefault(emptyList())
-                    }
-                    com.xxt.sign.study.StudyCourseStore.saveCourses(account.id, courses, chapters)
-                }
-            }
-            // 首页自己会重绘（onResume / 状态流），这里只负责把数据准备好
-        }
-    }
-
-    /** 右上角「刷新课程」：拉一遍课程 + 章节，首页立刻能看到 */
-    private fun refreshCourses() {
-        val account = com.xxt.sign.core.AccountStore.get(com.xxt.sign.core.Settings.studyAccountId)
-        if (account == null) {
-            android.widget.Toast.makeText(this, "先到账号页加一个账号", android.widget.Toast.LENGTH_SHORT).show()
-            return
-        }
-        android.widget.Toast.makeText(this, "正在刷新课程…", android.widget.Toast.LENGTH_SHORT).show()
-        lifecycleScope.launch {
-            val result = withContext(kotlinx.coroutines.Dispatchers.IO) {
-                runCatching {
-                    val (session, err) = com.xxt.sign.sign.SignEngine.sessionFor(account)
-                    if (session == null) return@runCatching err to null
-                    val api = com.xxt.sign.study.StudyApi(session)
-                    val courses = api.getCourses()
-                    val chapters = mutableMapOf<String, List<com.xxt.sign.study.StudyChapter>>()
-                    courses.forEach { c ->
-                        chapters[c.key] = runCatching { api.getChapters(c) }.getOrDefault(emptyList())
-                    }
-                    com.xxt.sign.study.StudyCourseStore.saveCourses(account.id, courses, chapters)
-                    "" to courses.size
-                }.getOrElse { (it.message ?: "刷新失败") to null }
-            }
-            val toast = if (result.second == null) result.first else "已刷新 ${result.second} 门课程"
-            android.widget.Toast.makeText(this@MainActivity, toast, android.widget.Toast.LENGTH_SHORT).show()
-            showTab(Route.HOME)
-        }
-    }
-
-    /** 日志是二级页：不在底栏里，从右上角菜单进来 */
-    fun openLogs() = showTab(Route.LOG)
-
-    /** 签到记录：首页那行签到状态点进来 */
-    fun openSignRecords() = showTab(Route.SIGN_RECORDS)
-
-    private fun routeOf(itemId: Int): Route? = when (itemId) {
-        R.id.nav_home -> Route.HOME
-        R.id.nav_accounts -> Route.ACCOUNTS
-        else -> null
-    }
-
-    private fun idOf(route: Route): Int = when (route) {
-        Route.HOME -> R.id.nav_home
-        // 账号外的页面在底栏里没有对应项，给个已知 id 不让它崩
-        else -> R.id.nav_home
-    }
-
-    override fun onSaveInstanceState(outState: Bundle) {
-        outState.putString(KEY_ROUTE, currentRoute.name)
-        super.onSaveInstanceState(outState)
-    }
-
-    /** 底栏最多 5 项（BottomNavigationView 的硬限制），其余页面走二级入口 */
-    private enum class Route(val tag: String, val titleRes: Int) {
-        HOME("tab_home", R.string.tab_home),
-        ACCOUNTS("tab_accounts", R.string.tab_accounts),
-        SIGN_RECORDS("tab_sign_records", R.string.tab_sign_records),
-        LOG("tab_log", R.string.tab_log)
-    }
-
-    private fun showTab(route: Route) {
-        currentRoute = route
-        binding.toolbar.title = getString(route.titleRes)
 
         val fm = supportFragmentManager
-        val target: Fragment = fm.findFragmentByTag(route.tag) ?: when (route) {
-            Route.HOME -> HomeFragment()
-            Route.ACCOUNTS -> AccountsFragment()
-            Route.LOG -> LogFragment()
-            Route.SIGN_RECORDS -> com.xxt.sign.ui.SignRecordFragment()
+        val target: Fragment = fm.findFragmentByTag(tag) ?: when (itemId) {
+            R.id.nav_accounts -> AccountsFragment()
+            R.id.nav_sign -> SignFragment()
+            R.id.nav_study -> StudyFragment()
+            R.id.nav_quiz -> QuizFragment()
+            else -> LogFragment()
         }
 
         val ft = fm.beginTransaction()
-        for (r in Route.entries) {
-            val f = fm.findFragmentByTag(r.tag) ?: continue
+        for (t in ALL_TAGS) {
+            val f = fm.findFragmentByTag(t) ?: continue
             if (f !== target) ft.hide(f)
         }
-        if (target.isAdded) ft.show(target) else ft.add(R.id.container, target, route.tag)
+        if (target.isAdded) ft.show(target) else ft.add(R.id.container, target, tag)
         ft.commitNow()
     }
 
     companion object {
-        private const val KEY_ROUTE = "current_route"
+        private const val TAG_ACCOUNTS = "tab_accounts"
+        private const val TAG_SIGN = "tab_sign"
+        private const val TAG_STUDY = "tab_study"
+        private const val TAG_QUIZ = "tab_quiz"
+        private const val TAG_LOG = "tab_log"
+        private val ALL_TAGS = listOf(TAG_ACCOUNTS, TAG_SIGN, TAG_STUDY, TAG_QUIZ, TAG_LOG)
     }
 }

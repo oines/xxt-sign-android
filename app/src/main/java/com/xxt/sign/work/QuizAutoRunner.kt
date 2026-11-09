@@ -3,6 +3,7 @@ package com.xxt.sign.work
 import com.xxt.sign.App
 import com.xxt.sign.core.LogStore
 import com.xxt.sign.study.StudyApi
+import com.xxt.sign.study.StudyChapter
 import com.xxt.sign.study.StudyCourse
 
 /**
@@ -19,7 +20,11 @@ class QuizAutoRunner(
     private val studyApi: StudyApi,
     private val workApi: WorkApi,
     private val engine: QuizEngine,
-    private val log: (String, Boolean) -> Unit = { m, ok -> LogStore.add(m, ok) }
+    private val log: (String, Boolean) -> Unit = { m, ok -> LogStore.add(m, ok) },
+    /** 开始做某一章时回调，UI 用来高亮「做题中」 */
+    private val onChapter: (StudyCourse, StudyChapter) -> Unit = { _, _ -> },
+    /** 一份测验结束回调，UI 用来更新章节状态 */
+    private val onResult: (StudyCourse, StudyChapter, QuizResult) -> Unit = { _, _, _ -> }
 ) {
 
     data class Pass(
@@ -35,7 +40,9 @@ class QuizAutoRunner(
         courses: List<StudyCourse>,
         maxCourses: Int = 2,
         maxQuizzes: Int = 2,
-        maxChaptersPerCourse: Int = 15
+        maxChaptersPerCourse: Int = 15,
+        /** course.key -> 选中的章节 id；为空表示整门课都做 */
+        chapterSelection: Map<String, Set<String>> = emptyMap()
     ): Pass {
         if (courses.isEmpty()) return Pass(emptyList(), 0, 0, 0)
 
@@ -49,8 +56,11 @@ class QuizAutoRunner(
             val course = courses[(cursor + i).mod(courses.size)]
             val chapters = runCatching { studyApi.getChapters(course) }.getOrDefault(emptyList())
             scannedCourses++
-            // 已完成的章节跳过；每门课再看最多 15 章，别把一轮拖太长
-            val todo = chapters.filter { !it.finished }.take(maxChaptersPerCourse)
+            val selected = chapterSelection[course.key].orEmpty()
+            // 已完成的章节跳过；指定了章节就只做这些章节
+            val todo = chapters.filter { !it.finished }
+                .filter { selected.isEmpty() || it.id in selected }
+                .take(maxChaptersPerCourse)
             for (ch in todo) {
                 if (results.size >= maxQuizzes) break@outer
                 scannedChapters++
@@ -66,6 +76,7 @@ class QuizAutoRunner(
                         false
                     )
                 }
+                if (quizzes.isNotEmpty()) onChapter(course, ch)
                 for (job in quizzes) {
                     if (results.size >= maxQuizzes) break@outer
                     if (QuizHandledStore.isHandled(accountId, job.key)) continue
@@ -88,6 +99,7 @@ class QuizAutoRunner(
                     }
                     if (r.needsHuman) pending++
                     results.add(r)
+                    onResult(course, ch, r)
                 }
             }
         }

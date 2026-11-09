@@ -104,8 +104,18 @@ class WorkApi(private val session: CxSession) {
             LogStore.add("[测验] 提交返回异常（HTTP ${r.code}）：${r.body.take(300)}", false)
             return@withContext SubmitResult(false, "提交返回异常（HTTP ${r.code}）", r.body)
         }
-        val ok = j.optBoolean("status")
-        val msg = j.optString("msg").ifBlank { if (ok) "提交成功" else "提交失败" }
+        // status 可能是 true/false、1/0 或 "true"/"false"，逐种兼容；不能只看 optBoolean
+        val status = j.opt("status")
+        val okFlag = when (status) {
+            is Boolean -> status
+            is Number -> status.toInt() != 0
+            is String -> status.equals("true", true) || status == "1"
+            else -> false
+        }
+        val rawMsg = j.optString("msg").ifBlank { if (okFlag) "提交成功" else "提交失败" }
+        // 个别情况下服务端 status=true 但 msg 明确写了失败/异常，以 msg 为准，避免 UI 假“已提交”
+        val ok = okFlag && !rawMsg.contains("失败") && !rawMsg.contains("异常")
+        val msg = if (ok) rawMsg else rawMsg.ifBlank { "提交失败" }
         if (!ok) {
             // 真机排障用：服务端原话一定要进日志，不要只剩一句「提交失败」
             LogStore.add("[测验] 提交被拒：$msg｜服务端原文：${r.body.take(300)}", false)

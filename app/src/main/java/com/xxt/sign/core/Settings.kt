@@ -239,6 +239,19 @@ object Settings {
         get() = sp.getString("quizLlmModel", "deepseek-chat") ?: "deepseek-chat"
         set(v) = sp.edit().putString("quizLlmModel", v).apply()
 
+    /**
+     * DeepSeek 推理强度（reasoning_effort）：low / medium / high。
+     * 越低越快越省，但复杂题更容易只出推理、正文为空；默认 low。
+     */
+    var quizLlmEffort: String
+        get() = sp.getString("quizLlmEffort", "low")
+            ?.lowercase()
+            ?.takeIf { it in setOf("low", "medium", "high") }
+            ?: "low"
+        set(v) = sp.edit()
+            .putString("quizLlmEffort", v.lowercase().takeIf { it in setOf("low", "medium", "high") } ?: "low")
+            .apply()
+
     /** 字体反解的最低相似度，低于它算「待复核」，不采信 */
     var quizFontThreshold: Float
         get() = sp.getFloat("quizFontThreshold", 0.86f).coerceIn(0.5f, 0.99f)
@@ -252,5 +265,15 @@ object Settings {
         }.getOrDefault(emptySet())
         set(v) = sp.edit()
             .putString("studyChapters", org.json.JSONArray(v.toList()).toString())
+            .apply()
+
+    /** 已勾选要做题的章节，元素形如 "courseId:clazzId#chapterId" */
+    var quizSelectedChapters: Set<String>
+        get() = runCatching {
+            val arr = org.json.JSONArray(sp.getString("quizChapters", "[]"))
+            (0 until arr.length()).map { arr.getString(it) }.toSet()
+        }.getOrDefault(emptySet())
+        set(v) = sp.edit()
+            .putString("quizChapters", org.json.JSONArray(v.toList()).toString())
             .apply()
 }

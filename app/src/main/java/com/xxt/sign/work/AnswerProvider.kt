@@ -37,7 +37,9 @@ class AnswerProvider(
 
     val mode: Mode
         get() = when (provider.trim().lowercase()) {
-            "", "off", "none", "disable" -> Mode.OFF
+            // off/none/留空 = 不查题库；但如果大模型可用，仍然只走大模型。
+            // 真正「什么都不查」只有把大模型也关掉。
+            "", "off", "none", "disable" -> if (llmReady) Mode.LLM_ONLY else Mode.OFF
             "llm", "off+llm" -> Mode.LLM_ONLY
             else -> Mode.BANK_FIRST
         }
@@ -73,6 +75,14 @@ class AnswerProvider(
 
     /** 最近一次 LLM 失败原因，给日志用 */
     val lastLlmError: String get() = llm?.lastError.orEmpty()
+
+    /** 最近一次大模型正文，做题详情页用 */
+    val lastLlmRaw: String get() = llm?.lastRaw.orEmpty()
+
+    /** 每道题开始前清掉上一题的 LLM 原文，避免题库命中时显示旧内容 */
+    fun clearLlmRaw() {
+        llm?.clearLastRaw()
+    }
 
     suspend fun search(question: WorkQuestion): QuizAnswer? = withContext(Dispatchers.IO) {
         if (!configured) return@withContext null

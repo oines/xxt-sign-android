@@ -91,6 +91,31 @@ object StudyCheckStore {
         bump()
     }
 
+    /**
+     * 章节测验交卷成功时本地增量更新。
+     * 只有已经检查过该章节（缓存存在）时才更新；否则等下次检查。
+     */
+    @Synchronized
+    fun markQuizDone(accountId: String, courseKey: String, chapterId: String) {
+        if (accountId.isBlank()) return
+        val root = readRoot(accountId)
+        val course = root.optJSONObject(courseKey) ?: return
+        val obj = course.optJSONObject(chapterId) ?: return
+        val check = decode(obj)
+        if (check.quizDone >= check.quizTasks) return
+
+        val newQuizDone = check.quizDone + 1
+        val newAllDone = if (check.allDone < check.allTasks) check.allDone + 1 else check.allDone
+        val updated = check.copy(
+            allDone = newAllDone,
+            quizDone = newQuizDone
+        )
+        course.put(chapterId, encode(updated))
+        root.put(courseKey, course)
+        writeRoot(accountId, root)
+        bump()
+    }
+
     private fun readRoot(accountId: String): JSONObject {
         if (!::sp.isInitialized) return JSONObject()
         val raw = sp.getString(key(accountId), "{}") ?: "{}"
@@ -114,6 +139,9 @@ object StudyCheckStore {
         put("v", c.videoTasks)
         put("vd", c.videoDone)
         put("n", c.notOpen)
+        put("qt", c.quizTasks)
+        put("qd", c.quizDone)
+        put("sf", c.scanFailed)
         put("jobs", JSONArray(c.doneVideoJobs.toList()))
     }
 
@@ -131,7 +159,10 @@ object StudyCheckStore {
             videoTasks = o.optInt("v", 0),
             videoDone = o.optInt("vd", 0),
             notOpen = o.optBoolean("n", false),
-            doneVideoJobs = jobs
+            doneVideoJobs = jobs,
+            quizTasks = o.optInt("qt", 0),
+            quizDone = o.optInt("qd", 0),
+            scanFailed = o.optBoolean("sf", false)
         )
     }
 }

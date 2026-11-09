@@ -87,6 +87,15 @@ class LlmClient(
     var lastError: String = ""
         private set
 
+    /** 最近一次模型正文（做题详情页展示「大模型输出」用） */
+    @Volatile
+    var lastRaw: String = ""
+        private set
+
+    internal fun clearLastRaw() {
+        lastRaw = ""
+    }
+
     /** 外部（[AnswerProvider] 等）catch 到 Throwable 时，把原因写回来，别让日志显示「没有原因」 */
     internal fun recordFailure(reason: String) {
         lastError = reason
@@ -130,7 +139,7 @@ class LlmClient(
             // 不传 max_tokens：额度那点钱不值得省，传小了推理段会把预算吃光、正文变空
             .put("stream", false)
             .put("messages", messages)
-        // 只填一个字母，把推理压到最低（low/high/max）
+        // 只填一个字母，推理档位按用户设置（DeepSeek 标准：low / medium / high）
         val eff = effort.trim().lowercase()
         if (eff in EFFORTS) body.put("reasoning_effort", eff)
         return body.toString()
@@ -159,6 +168,7 @@ class LlmClient(
     /** [answer] 的实现体；异常统一由 [answer] 兜住并写日志 */
     private suspend fun callOnce(q: WorkQuestion): QuizAnswer? {
         lastError = ""
+        lastRaw = ""
         if (!enabled) {
             lastError = "未配置 key"
             return null
@@ -197,11 +207,13 @@ class LlmClient(
         }
         val content = parsed.content
         if (content == null) {
+            lastRaw = ""
             lastError = parsed.error
             log("[LLM] ${parsed.error}｜原始返回：${brief(raw)}", false)
             return null
         }
 
+        lastRaw = content
         // LlmFormat 的类初始化一旦失败（真机上 ICU 正则炸过），这里会抛 ExceptionInInitializerError /
         // NoClassDefFoundError，必须接住并写日志，否则整卷都会变成「题库/LLM 都没命中」还查不到原因。
         val check = try {
@@ -330,7 +342,7 @@ class LlmClient(
     /** 测试连接：发一条最小请求，把结果说成人话 */
     suspend fun probe(): Probe = withContext(Dispatchers.IO) {
         if (!enabled) return@withContext Probe(false, "还没填 key")
-        val body = JSONObject()
+        val probeBody = JSONObject()
             .put("model", model.ifBlank { DEFAULT_MODEL })
             .put("temperature", 0)
             .put("stream", false)
@@ -338,7 +350,9 @@ class LlmClient(
                 "messages", JSONArray()
                     .put(JSONObject().put("role", "user").put("content", "回复 ok"))
             )
-            .toString()
+        val eff = effort.trim().lowercase()
+        if (eff in EFFORTS) probeBody.put("reasoning_effort", eff)
+        val body = probeBody.toString()
         val headers = mapOf(
             "Authorization" to "Bearer $apiKey",
             "Content-Type" to "application/json"
@@ -371,7 +385,9 @@ class LlmClient(
 
         /** 推理档位：low 最省，只填一个字母不需要想太多 */
         const val DEFAULT_EFFORT = "low"
-        val EFFORTS = setOf("low", "medium", "high", "max")
+
+        /** DeepSeek 标准档位；不要传 max（官方不认这个值） */
+        val EFFORTS = setOf("low", "medium", "high")
 
         private const val SYSTEM_PROMPT =
             "你是答题器。只输出一个 JSON 对象，不要任何解释、不要 Markdown 代码块。"

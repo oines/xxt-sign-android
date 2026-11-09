@@ -38,7 +38,13 @@ class QuizEngine(
     private val sleeper: suspend (Long) -> Unit = { delay(it) },
     private val log: (String, Boolean) -> Unit = { m, ok -> LogStore.add(m, ok) },
     /** 每道题的进度回调：第 index 题 / 共 total 题 */
-    private val onStep: (Int, Int) -> Unit = { _, _ -> }
+    private val onStep: (Int, Int) -> Unit = { _, _ -> },
+    /** 每题答完、进入拟人停留前回调；做题页用它显示题干/选项/大模型输出 */
+    private val onQuestion: (QuizQuestionLive) -> Unit = {},
+    /** 提交前等待开始；参数是秒数 */
+    private val onSubmitWait: (Int) -> Unit = {},
+    /** 用户手改的答案；提交前按 qid 覆盖自动答案 */
+    private val overrideAnswer: (String) -> String? = { null }
 ) {
 
     /** 页面里出现这些字样又没解析出题目 → 大概率是硬阻塞 */
@@ -113,6 +119,7 @@ class QuizEngine(
             val tolerableWeak = weak.size <= MAX_WEAK_CHARS && weakRatioOk
             val weakNote = if (weak.isNotEmpty() && tolerableWeak) "（有 ${weak.size} 个字不确定）" else ""
 
+            provider?.clearLlmRaw()
             val answer: QuizAnswer? = when {
                 weak.isNotEmpty() && !tolerableWeak -> null
                 provider == null || !provider.configured -> null
@@ -160,12 +167,47 @@ class QuizEngine(
                 }
             }
 
-            // 拟人节奏：每题停留 8–20 秒
-            sleeper(randomBetween(config.perQuestionMinSec, config.perQuestionMaxSec))
+            // 拟人节奏：每题停留 8–20 秒。停留期间 UI 展示题干/答案/大模型输出，
+            // 用户可以改选项；最终提交前会按 overrideAnswer 覆盖。
+            val waitMs = randomBetween(config.perQuestionMinSec, config.perQuestionMaxSec)
+            val waitSec = ((waitMs + 999) / 1000).toInt()
+            runCatching {
+                onQuestion(
+                    QuizQuestionLive(
+                        courseId = job.courseId,
+                        courseTitle = job.courseTitle,
+                        chapterId = job.chapterId,
+                        chapterTitle = job.chapterTitle,
+                        qid = q.qid,
+                        type = q.type,
+                        stem = stem.text,
+                        options = opts,
+                        answer = answer?.value.orEmpty(),
+                        source = when {
+                            answer != null -> answer.source + weakNote
+                            weak.isNotEmpty() && !tolerableWeak -> "待复核$weakNote"
+                            else -> "未命中"
+                        },
+                        llmRaw = if (answer?.source?.startsWith("LLM") == true) {
+                            provider?.lastLlmRaw.orEmpty()
+                        } else {
+                            ""
+                        },
+                        llmError = if (answer == null && provider?.configured == true) {
+                            provider?.lastLlmError.orEmpty()
+                        } else {
+                            ""
+                        },
+                        index = index + 1,
+                        total = page.questions.size,
+                        waitSeconds = waitSec
+                    )
+                )
+            }
+            sleeper(waitMs)
         }
 
         val total = page.questions.size
-        val hitRate = if (total > 0) submitAnswers.size.toFloat() / total else 0f
 
         if (submitAnswers.isEmpty()) {
             log("[测验] ${job.chapterTitle} · ${page.title} 一题都没答上，不交白卷", false)
@@ -178,44 +220,54 @@ class QuizEngine(
             )
         }
 
-        // 答完到提交之间再等一段
-        sleeper(randomBetween(config.submitWaitMinSec, config.submitWaitMaxSec))
+        // 提交前先记一次「已作答次数」基线：提交后回查没增加，就说明服务端其实没落库。
+        // 只是辅助判定，网络失败不阻止提交。
+        val beforeTimes = if (!config.storeOnly) {
+            runCatching { api.recordList(job).times }.getOrNull()
+        } else {
+            null
+        }
+
+        // 答完到提交之间再等一段；这段时间用户还可以在详情卡里改选项
+        val submitWaitMs = randomBetween(config.submitWaitMinSec, config.submitWaitMaxSec)
+        runCatching { onSubmitWait(((submitWaitMs + 999) / 1000).toInt()) }
+        sleeper(submitWaitMs)
+
+        // 用户手改的答案覆盖自动答案（多选/判断也按页面需要的值存）
+        val finalAnswers = LinkedHashMap(submitAnswers)
+        page.questions.forEach { q ->
+            val manual = runCatching { overrideAnswer(q.qid) }.getOrNull()
+            if (!manual.isNullOrBlank()) finalAnswers[q.qid] = manual
+        }
+        if (finalAnswers.size > submitAnswers.size) {
+            log("[测验] 提交前采用用户手改答案 ${finalAnswers.size - submitAnswers.size} 题", true)
+        }
+        val hitRate = if (total > 0) finalAnswers.size.toFloat() / total else 0f
 
         val submit = try {
-            api.submit(job, page, submitAnswers, config.storeOnly)
+            api.submit(job, page, finalAnswers, config.storeOnly)
         } catch (e: Exception) {
             lastFinishAt = System.currentTimeMillis()
             return result(
-                job, false, submitAnswers.size, total,
+                job, false, finalAnswers.size, total,
                 "提交异常：${e.message}", outcomes, hitRate = hitRate
             )
         }
         lastFinishAt = System.currentTimeMillis()
 
-        val mode = if (config.storeOnly) "已暂存（未交卷）" else "已提交"
-        val rateText = "命中 ${submitAnswers.size}/$total（${(hitRate * 100).toInt()}%）"
-        val low = hitRate < config.hitThreshold
-        val bank = outcomes.count { it.answer.isNotBlank() && it.source.startsWith("题库") }
-        val byLlm = outcomes.count { it.answer.isNotBlank() && it.source.startsWith("LLM") }
-        val blank = (total - submitAnswers.size).coerceAtLeast(0)
-        // 留空的题分两类：字认不准、题库/大模型没答案。别混成一句「没把握」
-        val weakSkipped = outcomes.count { it.source == "待复核" }
-        val missSkipped = (blank - weakSkipped).coerceAtLeast(0)
-        val msg = buildString {
-            if (submit.ok) append(mode).append("：").append(rateText)
-            else append("提交失败：").append(submit.message).append("｜").append(rateText)
-            append("｜").append(total).append(" 题：").append(submitAnswers.size).append(" 题答上")
-            if (weakSkipped > 0) append("、").append(weakSkipped).append(" 题因字认不准没敢答")
-            if (missSkipped > 0) append("、").append(missSkipped).append(" 题题库没答案")
-            if (low) append("｜低置信，建议回看")
-        }
-        log("[测验] ${job.chapterTitle} · ${page.title} $msg", submit.ok && !low)
-
+        // 服务端可能返回 status=true 但实际没落库；提交后回查一次，次数没增加就改判失败。
+        var submitOk = submit.ok
+        var submitMessage = submit.message
         var score = ""
-        if (submit.ok && !config.storeOnly) {
-            runCatching {
-                val rec = api.recordList(job)
-                if (rec.seen) {
+        if (submitOk && !config.storeOnly) {
+            val rec = runCatching { api.recordList(job) }.getOrNull()
+            if (rec != null) {
+                val baseline = beforeTimes ?: 0
+                if (!rec.seen || rec.times <= baseline) {
+                    submitOk = false
+                    submitMessage = "服务端未记录本次作答（回查次数 ${rec.times}，提交前 $baseline）"
+                    log("[测验] ${job.chapterTitle} · ${page.title} 提交返回成功但回查不到，判定提交失败", false)
+                } else {
                     score = rec.score
                     val tail = if (rec.score.isBlank()) "" else "，最高 ${rec.score} 分"
                     log("[测验] 回查：共 ${rec.times} 次$tail", true)
@@ -223,8 +275,29 @@ class QuizEngine(
             }
         }
 
+        val mode = when {
+            config.storeOnly -> "已暂存（未交卷）"
+            submitOk -> "已提交"
+            else -> "提交失败"
+        }
+        val rateText = "命中 ${finalAnswers.size}/$total（${(hitRate * 100).toInt()}%）"
+        val low = hitRate < config.hitThreshold
+        val blank = (total - finalAnswers.size).coerceAtLeast(0)
+        // 留空的题分两类：字认不准、题库/大模型没答案。别混成一句「没把握」
+        val weakSkipped = outcomes.count { it.source == "待复核" }
+        val missSkipped = (blank - weakSkipped).coerceAtLeast(0)
+        val msg = buildString {
+            if (submitOk) append(mode).append("：").append(rateText)
+            else append("提交失败：").append(submitMessage).append("｜").append(rateText)
+            append("｜").append(total).append(" 题：").append(finalAnswers.size).append(" 题答上")
+            if (weakSkipped > 0) append("、").append(weakSkipped).append(" 题因字认不准没敢答")
+            if (missSkipped > 0) append("、").append(missSkipped).append(" 题题库没答案")
+            if (low) append("｜低置信，建议回看")
+        }
+        log("[测验] ${job.chapterTitle} · ${page.title} $msg", submitOk && !low)
+
         return result(
-            job, submit.ok, submitAnswers.size, total, msg, outcomes,
+            job, submitOk, submitAnswers.size, total, msg, outcomes,
             hitRate = hitRate, score = score,
             fontReference = fontStats?.reference.orEmpty(),
             fontMean = fontStats?.mean ?: 0f,

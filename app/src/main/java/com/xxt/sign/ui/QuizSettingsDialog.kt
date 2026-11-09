@@ -26,12 +26,18 @@ object QuizSettingsDialog {
     private data class ProviderOption(val label: String, val value: String, val bank: Boolean)
 
     private val providerOptions = listOf(
-        ProviderOption("不查题库（都留空）", "off", false),
+        ProviderOption("不查题库（只走大模型，大模型关则留空）", "off", false),
         ProviderOption("内置免费题库（免配置）", "auto", true),
         ProviderOption("言溪题库", "yanxi", true),
         ProviderOption("柠檬题库", "lemon", true),
         ProviderOption("tikuAdapter（自建）", "tikuadapter", true),
         ProviderOption("纯大模型（不查题库）", "llm", false)
+    )
+
+    private val effortOptions = listOf(
+        "低（low，最省最快）" to "low",
+        "中（medium，平衡）" to "medium",
+        "高（high，更稳但更慢）" to "high"
     )
 
     private fun defaultEndpointFor(provider: String): String = when (provider.trim().lowercase()) {
@@ -72,6 +78,14 @@ object QuizSettingsDialog {
         v.etLlmKey.setText(Settings.quizLlmKey)
         v.etLlmBaseUrl.setText(Settings.quizLlmBaseUrl)
         v.etLlmModel.setText(Settings.quizLlmModel)
+
+        val effortDropdown = v.etLlmEffort as MaterialAutoCompleteTextView
+        var chosenEffort = effortOptions.firstOrNull { it.second == Settings.quizLlmEffort } ?: effortOptions.first()
+        effortDropdown.setSimpleItems(effortOptions.map { it.first }.toTypedArray())
+        effortDropdown.setText(chosenEffort.first, false)
+        effortDropdown.setOnItemClickListener { _, _, position, _ ->
+            chosenEffort = effortOptions.getOrElse(position) { effortOptions.first() }
+        }
         v.btnTestLlm.setOnClickListener {
             val key = v.etLlmKey.text?.toString()?.trim().orEmpty()
             val base = v.etLlmBaseUrl.text?.toString()?.trim().orEmpty()
@@ -87,7 +101,8 @@ object QuizSettingsDialog {
                 val probe = com.xxt.sign.work.LlmClient(
                     apiKey = key,
                     baseUrl = base.ifBlank { com.xxt.sign.work.LlmClient.DEFAULT_BASE_URL },
-                    model = model.ifBlank { com.xxt.sign.work.LlmClient.DEFAULT_MODEL }
+                    model = model.ifBlank { com.xxt.sign.work.LlmClient.DEFAULT_MODEL },
+                    effort = chosenEffort.second
                 ).probe()
                 if (!fragment.isAdded) return@launch
                 v.tvLlmTest.text = probe.detail
@@ -114,6 +129,7 @@ object QuizSettingsDialog {
                     .ifBlank { LlmClient.DEFAULT_BASE_URL }
                 Settings.quizLlmModel = v.etLlmModel.text?.toString()?.trim().orEmpty()
                     .ifBlank { LlmClient.DEFAULT_MODEL }
+                Settings.quizLlmEffort = chosenEffort.second
                 v.etQMin.text?.toString()?.toIntOrNull()?.let { Settings.quizPerQuestionMin = it }
                 v.etQMax.text?.toString()?.toIntOrNull()?.let { Settings.quizPerQuestionMax = it }
                 v.etSMin.text?.toString()?.toIntOrNull()?.let { Settings.quizSubmitWaitMin = it }

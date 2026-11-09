@@ -147,6 +147,29 @@
                 android:minHeight="56dp" />
         </com.google.android.material.textfield.TextInputLayout>
 
+        <com.google.android.material.textfield.TextInputLayout
+            style="@style/Widget.Material3.TextInputLayout.OutlinedBox.ExposedDropdownMenu"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:hint="思考强度（DeepSeek reasoning_effort）">
+
+            <com.google.android.material.textfield.MaterialAutoCompleteTextView
+                android:id="@+id/etLlmEffort"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:inputType="none"
+                android:minHeight="56dp" />
+        </com.google.android.material.textfield.TextInputLayout>
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="2dp"
+            android:text="低最省最快；高更稳但更慢，且更容易只出推理没有正文"
+            android:textColor="@color/muted"
+            android:textSize="12sp" />
+
         <com.google.android.material.button.MaterialButton
             android:id="@+id/btnTestLlm"
             style="@style/Widget.Material3.Button.OutlinedButton"

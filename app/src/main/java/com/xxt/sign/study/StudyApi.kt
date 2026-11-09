@@ -330,6 +330,7 @@ class StudyApi(private val session: CxSession) {
     suspend fun checkChapter(course: StudyCourse, chapter: StudyChapter): ChapterCheck {
         val map = LinkedHashMap<String, CardTask>()
         var notOpen = false
+        var sawJobPayload = false
         val sweep = PageSweep()
         var last = 0
         // 不用 jobCount 截断：章节测验/文档可能和视频不在同一张卡片上。
@@ -347,14 +348,18 @@ class StudyApi(private val session: CxSession) {
                 notOpen = true
                 break
             }
+            // 有 jobid 说明页面里确实有任务点数据；解析为空才可能是解析失败。
+            // 空章节页面没有任何 jobid，不能因为 knowledgeJobCount 缺省为 1 就报「扫描失败」。
+            val compact = r.body.replace(" ", "")
+            if (compact.contains("\"jobid\"") || compact.contains("\"jobId\"")) sawJobPayload = true
             StudyParser.parseCardTasks(r.body).forEach { map[it.key] = it }
             val newItems = map.size - last
             last = map.size
             if (!sweep.afterNew(newItems)) break
         }
         if (notOpen) return ChapterCheck(0, 0, 0, 0, notOpen = true)
-        if (map.isEmpty() && chapter.jobCount > 0) {
-            // 页面没解析出任务但章节标了有任务点：进度未知，标 scanFailed，不要伪造一个任务点
+        if (map.isEmpty() && sawJobPayload && chapter.jobCount > 0) {
+            // 页面有任务点数据但没解析出任务：进度未知，标 scanFailed，不要伪造一个任务点
             return ChapterCheck(1, 0, 1, 0, scanFailed = true)
         }
         return summarizeChapter(map.values)

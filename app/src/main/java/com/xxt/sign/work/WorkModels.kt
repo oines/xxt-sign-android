@@ -102,6 +102,35 @@ data class WorkPage(
 /** 一次答题的答案 */
 data class QuizAnswer(val value: String, val source: String, val confidence: Float = 1f)
 
+/**
+ * 做题页「详情」卡正在展示的一道题。
+ *
+ * 由 [QuizEngine] 在每题答完、进入拟人停留时回调；[answer] 可能为空（没答上/字认不准），
+ * 用户可以在停留期间改选项，最终提交前会以 [QuizRunManager] 里的覆盖值为准。
+ */
+data class QuizQuestionLive(
+    val courseId: String = "",
+    val courseTitle: String = "",
+    val chapterId: String = "",
+    val chapterTitle: String = "",
+    val qid: String,
+    val type: Int,
+    val stem: String,
+    val options: List<WorkOption> = emptyList(),
+    /** 当前采用的答案：单选 "A"、多选 "ABC"、判断 "true"/"false"、填空原文 */
+    val answer: String = "",
+    /** 题库/LLM/手动 等来源说明 */
+    val source: String = "",
+    /** 大模型这次返回的原文（题库命中则为空） */
+    val llmRaw: String = "",
+    /** 大模型失败原因（成功或未调用则为空） */
+    val llmError: String = "",
+    val index: Int = 0,
+    val total: Int = 0,
+    /** 本题拟人停留秒数，UI 用它显示倒计时 */
+    val waitSeconds: Int = 0
+)
+
 /** 单题处理结果，用于日志与回查 */
 data class QuestionOutcome(
     val qid: String,

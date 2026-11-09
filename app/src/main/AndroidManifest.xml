@@ -55,9 +55,13 @@
             </intent-filter>
         </activity>
         <activity
-            android:name=".ui.CourseActivity"
+            android:name=".ui.StudyDetailActivity"
             android:exported="false"
-            android:label="课程" />
+            android:label="刷课任务" />
+        <activity
+            android:name=".ui.QuizDetailActivity"
+            android:exported="false"
+            android:label="做题详情" />
 
     </application>
 
