@@ -115,25 +115,52 @@ class StudyApi(private val session: CxSession) {
     /** 章节目录 + 平台自报的「已完成任务点 X/Y」（同一份页面，不额外请求） */
     data class ChapterPage(val chapters: List<StudyChapter>, val donePoints: Int, val totalPoints: Int)
 
+    /**
+     * 拿章节目录 + 平台口径的任务点。
+     *
+     * 平台统计只存在于 `mooc2-ans.chaoxing.com/mooc2-ans/mycourse/studentcourse`
+     * （四个参数缺一不可）。真机上遇到过页面结构完全正常但数字是 **0/0** 的情况：
+     * 那不是「没完成任务点」，而是这次请求没拿到统计口径，**必须当成没解析到**，
+     * 然后换备用域名再试一次；两次都不行就报 -1，让上层保留自数分母并打日志。
+     */
     suspend fun getChapterPage(course: StudyCourse): ChapterPage {
-        limiter.acquire()
-        val url = "https://mooc2-ans.chaoxing.com/mooc2-ans/mycourse/studentcourse" +
-            "?courseid=${course.courseId}&clazzid=${course.clazzId}" +
-            "&cpi=${enc(course.cpi.ifBlank { "0" })}&ut=s"
-        val r = c.get(url)
-        checkLogin(r.body)
-        val totals = StudyParser.parseTaskPointTotals(r.body)
-        if (totals == null && r.body.contains("已完成任务点")) {
-            // 真机取证：找到了关键字但没读出数字，把附近片段打到日志里，下次一眼能修
-            val at = r.body.indexOf("已完成任务点")
-            val snippet = r.body.substring(at, minOf(r.body.length, at + 160)).replace("\n", " ")
-            LogStore.add("[体检] 平台的「已完成任务点」没解析出数字，片段：$snippet", false)
+        val urls = ChapterPageUrl.candidates(course)
+        if (!ChapterPageUrl.hasCpi(course)) {
+            LogStore.add(
+                "[体检] ${course.title} 这门课没有 cpi（课程缓存太旧？），平台口径大概率拿不到",
+                false
+            )
         }
-        return ChapterPage(
-            chapters = StudyParser.parseChapters(r.body),
-            donePoints = totals?.first ?: -1,
-            totalPoints = totals?.second ?: -1
-        )
+        var chapters: List<StudyChapter> = emptyList()
+        urls.forEachIndexed { index, url ->
+            limiter.acquire()
+            val r = runCatching { c.get(url) }.getOrNull()
+            if (r == null) {
+                LogStore.add("[体检] 任务点口径第 ${index + 1} 个地址请求失败：$url", false)
+                return@forEachIndexed
+            }
+            checkLogin(r.body)
+            if (chapters.isEmpty()) chapters = StudyParser.parseChapters(r.body)
+            val totals = StudyParser.parseTaskPointTotals(r.body)
+            if (totals != null) {
+                if (index > 0) {
+                    LogStore.add("[体检] 任务点口径：第 ${index + 1} 个地址拿到了 ${totals.first}/${totals.second}", true)
+                }
+                return ChapterPage(chapters, totals.first, totals.second)
+            }
+            // 真机取证：页面里有「已完成任务点」但数字是 0/0，或根本找不到关键字
+            val at = r.body.indexOf("已完成任务点")
+            val snippet = if (at >= 0) {
+                r.body.substring(at, minOf(r.body.length, at + 120)).replace("\n", " ")
+            } else {
+                "页面里没有「已完成任务点」"
+            }
+            LogStore.add(
+                "[体检] 任务点口径第 ${index + 1} 个地址没拿到有效数字（0/0 也算无效）：$url｜$snippet",
+                false
+            )
+        }
+        return ChapterPage(chapters, -1, -1)
     }
 
     // -------------------------------------------------------- 视频任务
@@ -448,4 +475,37 @@ internal fun buildVideoEnc(
     val digest = MessageDigest.getInstance("MD5")
         .digest(plain.toByteArray(Charsets.UTF_8))
     return digest.joinToString("") { "%02x".format(it) }
+}
+
+/**
+ * 章节目录页（平台任务点口径的唯一来源）的候选地址。
+ *
+ * 真机上遇到过返回 0/0 的情况：页面结构正常、数字是 0 —— 那不是「没做任务点」，
+ * 是这次请求没拿到统计口径。所以按顺序试：
+ *   1. mooc2-ans（抓包里 11/392 就是它，四个参数缺一不可）
+ *   2. mooc1 的备用路径（同参数，别的账号/版本会走这条）
+ *   3. mooc2-ans 再试一次并带时间戳（防服务端缓存了一个 0/0 的结果）
+ */
+internal object ChapterPageUrl {
+
+    const val PRIMARY = "https://mooc2-ans.chaoxing.com/mooc2-ans/mycourse/studentcourse"
+    const val FALLBACK = "https://mooc1.chaoxing.com/mooc-ans/mycourse/studentcourse"
+
+    /** cpi 必须是账号里那个真值；缺了平台口径基本拿不到，上层要打日志 */
+    fun hasCpi(course: StudyCourse): Boolean = course.cpi.isNotBlank()
+
+    fun candidates(course: StudyCourse, now: Long = System.currentTimeMillis()): List<String> {
+        val qs = query(course)
+        return listOf(
+            "$PRIMARY?$qs",
+            "$FALLBACK?$qs",
+            "$PRIMARY?$qs&t=$now"
+        )
+    }
+
+    private fun query(course: StudyCourse): String =
+        "courseid=${enc(course.courseId)}" +
+            "&clazzid=${enc(course.clazzId)}" +
+            "&cpi=${enc(course.cpi)}" +
+            "&ut=s"
 }

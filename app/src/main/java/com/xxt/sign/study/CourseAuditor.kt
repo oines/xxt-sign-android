@@ -112,7 +112,11 @@ class CourseAuditor(
                 false
             )
         } else if (platformTotal <= 0) {
-            log("[体检] ${course.title}：没解析到平台的「已完成任务点 X/Y」，分母用自数 ${counted.taskPoints}", false)
+            log(
+                "[体检] ${course.title}：平台的「已完成任务点 X/Y」没拿到（0/0 也算没拿到，已试过备用域名），" +
+                    "分母暂用自数 ${counted.taskPoints}",
+                false
+            )
         }
         log("[体检] ${audit.headline()}", audit.allGreen)
         // 真机取证口子：类型分布一眼能看出「需本人」到底是哪类
