@@ -76,17 +76,12 @@ class QuizEngine(
             log("[测验] ${job.chapterTitle} 字体解不开，按明文处理（大概率答错，建议人工）", false)
         }
 
-        // 整卷预处理：多参考字体里选一套胜出的，并按本卷相似度分布算自适应阈值
+        // 整卷预处理：多参考字体里逐字取最优，并按本卷相似度分布算自适应阈值
         val fontStats = decoder?.prepare(
             page.questions.flatMap { q -> listOf(q.stem) + q.options.map { it.text } }
         )
         if (fontStats != null) {
-            log(
-                "[测验] 字体识别：${fontStats.reference}｜平均 ${"%.2f".format(fontStats.mean)}" +
-                    "｜中位 ${"%.2f".format(fontStats.median)}｜最低 ${"%.2f".format(fontStats.min)}" +
-                    "｜存疑 ${fontStats.weak}/${fontStats.total} 字｜阈值 ${"%.2f".format(fontStats.threshold)}",
-                true
-            )
+            log(fontStats.report(), true)
             if (fontStats.unreadable) {
                 log(
                     "[测验] ${job.chapterTitle} 这卷字体无法识别（中位 ${"%.2f".format(fontStats.median)}），不硬答",

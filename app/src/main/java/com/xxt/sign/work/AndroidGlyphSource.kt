@@ -33,8 +33,16 @@ class AndroidGlyphSource(
 /**
  * 参考字体集合。
  *
- * 至少两套系统字体（黑体/宋体，Android 上分别是 Noto Sans CJK 与 Noto Serif CJK）；
- * 如果把 ttf/otf 放进 `assets/fonts/`，也会自动加进来作为更多参考。
+ * 真机踩过的坑：只放「系统黑体 + 系统宋体」时，有的卷子两套都不是页面用的那套，
+ * 整卷相似度只有 0.86，解出来是「吉年夹，中圆兵户党」——**部分字错**。
+ * 所以这里把设备上能拿到的中文字体全枚举出来：
+ *
+ *  1. Typeface 家族：黑体 / 宋体 / 等宽 / 默认
+ *  2. `/system/fonts` 里名字带 CJK / NotoSans / NotoSerif / DroidSansFallback / SourceHan 的字体文件
+ *  3. `assets/fonts/` 里自己放的 ttf/otf
+ *
+ * 每套都先做「能不能画中文」体检（'中' 和 '国' 都得画出不同形状），
+ * 画不出来的（缺字变成豆腐块）直接踢掉，免得它污染相似度。
  */
 object AndroidReferenceFonts {
 
@@ -43,24 +51,77 @@ object AndroidReferenceFonts {
 
     fun list(context: Context): List<ReferenceFont> {
         cached?.let { return it }
-        val fonts = mutableListOf(
-            ReferenceFont("系统黑体") { c, s -> GlyphRaster.render(Typeface.SANS_SERIF, c, s) },
-            ReferenceFont("系统宋体") { c, s -> GlyphRaster.render(Typeface.SERIF, c, s) }
-        )
+        val fonts = LinkedHashMap<String, ReferenceFont>()
+
+        fun add(name: String, tf: Typeface?) {
+            if (tf == null) return
+            if (fonts.containsKey(name)) return
+            if (!drawsChinese(tf)) return
+            fonts[name] = ReferenceFont(name) { c, s -> GlyphRaster.render(tf, c, s) }
+        }
+
+        add("系统黑体", Typeface.SANS_SERIF)
+        add("系统宋体", Typeface.SERIF)
+        add("系统等宽", Typeface.MONOSPACE)
+        add("系统默认", Typeface.DEFAULT)
+        runCatching {
+            add("黑体-中粗", Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD))
+            add("宋体-中粗", Typeface.create(Typeface.SERIF, Typeface.BOLD))
+        }
+
+        // /system/fonts 里的中文字体文件（NotoSansCJK-Regular.ttc / NotoSerifCJK-Bold.ttc / …）
+        CJK_DIRS.forEach { dir ->
+            val files = runCatching {
+                File(dir).listFiles { f -> f.isFile && isCjkFontName(f.name) }
+            }.getOrNull().orEmpty().sortedBy { it.name }
+            files.forEach { f ->
+                val tf = runCatching { Typeface.createFromFile(f) }.getOrNull()
+                add(f.name.substringBeforeLast('.'), tf)
+            }
+        }
+
+        // assets/fonts：用户自己丢进去的字体，优先级也当参考
         runCatching {
             context.assets.list("fonts").orEmpty()
                 .filter { it.endsWith(".ttf", true) || it.endsWith(".otf", true) }
                 .forEach { name ->
-                    val tf = Typeface.createFromAsset(context.assets, "fonts/$name")
-                    fonts.add(
-                        ReferenceFont(name.substringBeforeLast('.')) { c, s ->
-                            GlyphRaster.render(tf, c, s)
-                        }
-                    )
+                    val tf = runCatching {
+                        Typeface.createFromAsset(context.assets, "fonts/$name")
+                    }.getOrNull()
+                    add(name.substringBeforeLast('.'), tf)
                 }
         }
-        cached = fonts
-        return fonts
+
+        val list = fonts.values.toList()
+        cached = list
+        return list
+    }
+
+    /** 清缓存（设置里换字体后重新枚举用） */
+    fun invalidate() {
+        cached = null
+    }
+
+    private val CJK_DIRS = listOf("/system/fonts", "/system/font", "/product/fonts", "/vendor/fonts")
+
+    /** 只挑可能含中文的字体文件，别把整个字体目录（几十套）都加载进来 */
+    fun isCjkFontName(name: String): Boolean {
+        val n = name.lowercase()
+        if (!n.endsWith(".ttf") && !n.endsWith(".otf") && !n.endsWith(".ttc")) return false
+        return listOf(
+            "cjk", "notosans", "notoserif", "sourcehan", "droid",
+            "misansw", "wqy", "droidsansfallback", "hans", "sc-"
+        ).any { n.contains(it) }
+    }
+
+    /**
+     * 这套字体能不能画中文：'中' 和 '国' 都要有像素，且不能长得一模一样
+     * （缺字时全是同一个豆腐块 → 相似度 1.0，会把所有参考都带偏）。
+     */
+    private fun drawsChinese(tf: Typeface): Boolean {
+        val a = runCatching { GlyphRaster.render(tf, '中', 16) }.getOrNull() ?: return false
+        val b = runCatching { GlyphRaster.render(tf, '国', 16) }.getOrNull() ?: return false
+        return FontDecoder.cosine(a, b) < 0.97f
     }
 }
 

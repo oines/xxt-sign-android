@@ -147,6 +147,41 @@ class FontDecoderTest {
         assertEquals(before + 3, calls)
     }
 
+    /** 设备上有几套参考字体、每字赢了哪套，都要能在统计里看到（真机排障用） */
+    @Test
+    fun statsReportReferenceInventory() {
+        val probes = mapOf('丂' to unit(0.0), '丄' to unit(0.0), '丅' to unit(0.0))
+        val refs = listOf(refAt("系统黑体", 0.90f), refAt("系统宋体", 0.95f))
+        val d = decoder(probes, refs)
+        val stats = d.prepare(listOf("丂丄丅"))!!
+
+        assertEquals(2, stats.referenceCount)
+        assertEquals(listOf("系统黑体", "系统宋体"), stats.referenceNames)
+        // 逐字取最优 → 三个字都该由 0.95 的宋体胜出
+        assertEquals(3, stats.perRefHits["系统宋体"])
+        assertEquals(1, stats.perRefHits.size)
+        assertEquals(0.95f, stats.mean, 0.01f)
+        // 最优-次优差 = 0.95 - 0.90
+        assertEquals(0.05f, stats.gapMedian, 0.01f)
+        assertEquals(0, stats.gapTight)
+
+        val line = stats.report()
+        assertTrue(line.contains("参考字体 2 套"))
+        assertTrue(line.contains("系统黑体"))
+        assertTrue(line.contains("最优-次优差"))
+        assertTrue(line.contains("存疑 0/3"))
+    }
+
+    /** 两套参考字体分不开（差 <0.02）：就算分数高也算「高危字」，单独计数 */
+    @Test
+    fun gapTightCountsAmbiguousChars() {
+        val probes = mapOf('丂' to unit(0.0), '丄' to unit(0.0))
+        val refs = listOf(refAt("系统黑体", 0.900f), refAt("系统宋体", 0.895f))
+        val stats = decoder(probes, refs).prepare(listOf("丂丄"))!!
+        assertEquals(2, stats.gapTight)
+        assertTrue(stats.report().contains("<0.02 的 2 字"))
+    }
+
     @Test
     fun kangxiRadicalIsNormalizedToCjk() {
         assertEquals('\u4E00', FontDecoder.normalize('\u2F00'))
