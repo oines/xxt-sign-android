@@ -177,6 +177,45 @@ class LlmClientTest {
         assertEquals("B", r?.value)
     }
 
+    /** 推理段里的 JSON 中间可能带空白，以前靠正则 \s* 匹配，现在靠字符串扫描 */
+    @Test
+    fun answerInsideReasoningWithSpacesIsUsable() = runBlocking {
+        val body = JSONObject().apply {
+            put("choices", org.json.JSONArray().put(
+                JSONObject()
+                    .put(
+                        "message",
+                        JSONObject().put("content", "")
+                            .put("reasoning_content", "再想想…{  \n\"answer\" : \"B\" }")
+                    )
+                    .put("finish_reason", "stop")
+            ))
+        }.toString()
+        val r = client(FakeHttp(mutableListOf(ok(body)))).answer(question)
+        assertEquals("B", r?.value)
+    }
+
+    /**
+     * 真机崩过的那一类：类初始化失败抛的是 ExceptionInInitializerError（Error，不是 Exception）。
+     * 以前被 runCatching 静默吞掉，整卷都变成「题库/LLM 都没命中」且日志里没有原因。
+     * 现在必须接住、写进 lastError、给一行日志，且绝不往外抛。
+     */
+    @Test
+    fun classInitErrorIsCaughtAndSurfaced() = runBlocking {
+        val boom = object : LlmHttp {
+            override fun post(
+                url: String,
+                headers: Map<String, String>,
+                body: String,
+                timeoutMs: Long
+            ): LlmHttpResult? = throw ExceptionInInitializerError(IllegalStateException("ICU regex 炸了"))
+        }
+        val c = client(boom)
+        assertNull(c.answer(question))
+        assertTrue(c.lastError, c.lastError.contains("ExceptionInInitializerError"))
+        assertTrue(c.lastError, c.lastError.contains("ICU regex"))
+    }
+
     /** 服务端报错（例如模型不存在）：要能看懂，而不是「没有 content」 */
     @Test
     fun serverErrorBodyIsReadable() = runBlocking {

@@ -3,6 +3,7 @@ package com.xxt.sign.work
 import com.xxt.sign.net.Http
 import com.xxt.sign.net.enc
 import com.xxt.sign.study.RequestLimiter
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
@@ -92,7 +93,17 @@ class AnswerProvider(
 
         // 2) 题库没命中（或本来就是纯 LLM 模式）才问大模型
         if (llmReady) {
-            val fromLlm = runCatching { llm?.answer(question) }.getOrNull()
+            // 注意：这里绝不能只写 runCatching。真机上 LlmFormat 类初始化失败抛的
+            // ExceptionInInitializerError 不是 Exception，被静默吞掉后整卷都是「都没命中」，
+            // 日志里连原因都没有。所以 catch Throwable、写回 lastError、再留空。
+            val fromLlm = try {
+                llm?.answer(question)
+            } catch (c: CancellationException) {
+                throw c
+            } catch (t: Throwable) {
+                llm?.recordFailure("调用异常：${describeThrowable(t)}")
+                null
+            }
             if (fromLlm != null) return@withContext fromLlm
         }
         null

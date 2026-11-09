@@ -1,6 +1,7 @@
 package com.xxt.sign.work
 
 import com.xxt.sign.core.LogStore
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 import kotlin.random.Random
 
@@ -120,7 +121,16 @@ class QuizEngine(
             val answer: QuizAnswer? = when {
                 weak.isNotEmpty() && !tolerableWeak -> null
                 provider == null || !provider.configured -> null
-                else -> runCatching { provider.search(decodedQ) }.getOrNull()
+                // catch Throwable：类初始化错误（ExceptionInInitializerError / NoClassDefFoundError）
+                // 不是 Exception，用 runCatching 会静默吞掉，日志里只剩「都没命中」没有原因
+                else -> try {
+                    provider.search(decodedQ)
+                } catch (c: CancellationException) {
+                    throw c
+                } catch (t: Throwable) {
+                    log("[测验] 第${no}题 ${WorkQuestion.typeName(q.type)} 查答案异常：${describeThrowable(t)}，留空", false)
+                    null
+                }
             }
 
             when {

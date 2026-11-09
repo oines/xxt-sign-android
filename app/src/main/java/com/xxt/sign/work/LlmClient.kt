@@ -1,6 +1,7 @@
 package com.xxt.sign.work
 
 import com.xxt.sign.net.Http
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
@@ -11,6 +12,24 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
 import java.util.concurrent.TimeUnit
+
+/**
+ * 把任意 Throwable（含 [ExceptionInInitializerError] / [NoClassDefFoundError]）压成一行人话。
+ *
+ * 真机上 LlmFormat 的静态初始化在 Android 的 ICU 正则引擎上炸过：类初始化失败之后，
+ * 第一次调用只会拿到 ExceptionInInitializerError（消息常常是空的），后面每次都是
+ * NoClassDefFoundError「Rejecting re-init on previously-failed class」。这两种错误
+ * 不是 Exception，只 catch Exception 根本接不住，所以整条 LLM 链路会被静默吞掉。
+ * 这里只用类名 + message + cause 拼字符串，**不用正则**。
+ */
+internal fun describeThrowable(t: Throwable): String {
+    val self = t::class.java.name + ": " + (t.message?.trim()?.takeIf { it.isNotEmpty() } ?: "（无消息）")
+    val cause = t.cause
+    if (cause == null || cause === t) return self
+    val inner = cause::class.java.name + ": " +
+        (cause.message?.trim()?.takeIf { it.isNotEmpty() } ?: "（无消息）")
+    return "$self ← $inner"
+}
 
 /**
  * 可替换的 HTTP 层。
@@ -68,6 +87,12 @@ class LlmClient(
     var lastError: String = ""
         private set
 
+    /** 外部（[AnswerProvider] 等）catch 到 Throwable 时，把原因写回来，别让日志显示「没有原因」 */
+    internal fun recordFailure(reason: String) {
+        lastError = reason
+        log("[LLM] $reason", false)
+    }
+
     val enabled: Boolean get() = apiKey.isNotBlank()
 
     private val endpoint: String
@@ -111,11 +136,32 @@ class LlmClient(
         return body.toString()
     }
 
-    /** 调一次模型（含 1 次重试与校验） */
+    /**
+     * 调一次模型（含 1 次重试与校验）。
+     *
+     * **整条链路兜住 Throwable**：解析/校验（包括 [LlmFormat] 的类初始化）出任何问题，
+     * 都要留下「一题一行 + 原始响应前 200 字」的日志再留空，绝不静默。
+     * 协程取消要原样抛出，不能被兜住。
+     */
     suspend fun answer(q: WorkQuestion): QuizAnswer? = withContext(Dispatchers.IO) {
+        try {
+            callOnce(q)
+        } catch (c: CancellationException) {
+            throw c
+        } catch (t: Throwable) {
+            val reason = "调用异常：${describeThrowable(t)}"
+            lastError = reason
+            log("[LLM] $reason｜题：${brief(q.stem, 40)}", false)
+            null
+        }
+    }
+
+    /** [answer] 的实现体；异常统一由 [answer] 兜住并写日志 */
+    private suspend fun callOnce(q: WorkQuestion): QuizAnswer? {
+        lastError = ""
         if (!enabled) {
             lastError = "未配置 key"
-            return@withContext null
+            return null
         }
         val body = buildBody(q)
         val headers = mapOf(
@@ -133,32 +179,58 @@ class LlmClient(
         }
         if (resp == null) {
             lastError = "连不上 ${endpoint}（网络或代理问题，已重试 1 次）"
-            return@withContext null
+            return null
         }
 
         // 失败就把原文写进日志，别只说「没有 content」
         if (resp.code !in 200..299) {
             lastError = readableError(resp)
-            log("[LLM] 请求失败：${resp.code} ${resp.body.take(300)}", false)
-            return@withContext null
+            log("[LLM] 请求失败：${resp.code} ${brief(resp.body)}", false)
+            return null
         }
 
-        val parsed = parseMessage(resp.body)
+        val raw = resp.body
+        val parsed = try {
+            parseMessage(raw)
+        } catch (t: Throwable) {
+            return parseFailed(raw, "解析响应异常：${describeThrowable(t)}")
+        }
         val content = parsed.content
         if (content == null) {
             lastError = parsed.error
-            log("[LLM] ${parsed.error}｜原始返回：${resp.body.take(300)}", false)
-            return@withContext null
+            log("[LLM] ${parsed.error}｜原始返回：${brief(raw)}", false)
+            return null
         }
 
-        val check = LlmFormat.check(content, q)
+        // LlmFormat 的类初始化一旦失败（真机上 ICU 正则炸过），这里会抛 ExceptionInInitializerError /
+        // NoClassDefFoundError，必须接住并写日志，否则整卷都会变成「题库/LLM 都没命中」还查不到原因。
+        val check = try {
+            LlmFormat.check(content, q)
+        } catch (c: CancellationException) {
+            throw c
+        } catch (t: Throwable) {
+            return parseFailed(raw, "格式校验异常：${describeThrowable(t)}")
+        }
         if (!check.ok) {
             lastError = check.reason
-            log("[LLM] 格式校验没过（${check.reason}）｜原始返回：${resp.body.take(300)}", false)
-            return@withContext null
+            log("[LLM] 格式校验没过（${check.reason}）｜原始返回：${brief(raw)}", false)
+            return null
         }
-        QuizAnswer(check.value, "LLM·${model.ifBlank { DEFAULT_MODEL }}")
+        // 成功也要留一行：真机排查时要能直接看到模型到底回了哪个选项
+        log("[LLM] 答案=${check.value}｜题：${brief(q.stem, 40)}", true)
+        return QuizAnswer(check.value, "LLM·${model.ifBlank { DEFAULT_MODEL }}")
     }
+
+    /** 解析/校验抛异常时的统一出口：原因 + 原始响应前 200 字，一题一行 */
+    private fun parseFailed(rawBody: String, reason: String): QuizAnswer? {
+        lastError = reason
+        log("[LLM] $reason｜原始返回：${brief(rawBody)}", false)
+        return null
+    }
+
+    /** 日志用：压成一行并按 [max] 截断（默认 200 字） */
+    internal fun brief(raw: String, max: Int = MAX_LOG_CHARS): String =
+        raw.replace('\n', ' ').replace('\r', ' ').replace('\t', ' ').trim().take(max)
 
     /** 把各种失败翻成人能看懂的一句话 */
     internal fun readableError(resp: LlmHttpResult): String = when (resp.code) {
@@ -232,8 +304,8 @@ class LlmClient(
         val reasoning = listOf("reasoning_content", "reasoning")
             .firstNotNullOfOrNull { k -> msg?.optString(k)?.takeIf { it.isNotBlank() } }
         if (reasoning != null) {
-            // 推理段里可能就有 {"answer":"A"}
-            val hasJson = Regex("\\{\\s*\"answer\"").containsMatchIn(reasoning)
+            // 推理段里可能就有 {"answer":"A"}（字符串查找，不用正则）
+            val hasJson = LlmFormat.hasAnswerKey(reasoning)
             return if (hasJson) {
                 Parsed(reasoning, fromReasoning = true, finishReason = first?.optString("finish_reason").orEmpty())
             } else {
@@ -303,6 +375,9 @@ class LlmClient(
 
         private const val SYSTEM_PROMPT =
             "你是答题器。只输出一个 JSON 对象，不要任何解释、不要 Markdown 代码块。"
+
+        /** 日志里原始返回只留前 200 字 */
+        internal const val MAX_LOG_CHARS = 200
     }
 }
 
@@ -314,6 +389,11 @@ class LlmClient(
  *  - 多选：非空、去重排序，且是选项字母集合的子集
  *  - 判断：只能是 true / false
  *  - 填空/简答：非空、长度合理、不是「无法确定」这类拒答
+ *
+ * **这里一处正则都不许有。** 真机（Pixel 5 / Android 14）上静态初始化里抠 JSON 对象的那条正则
+ * 被 Android 的 ICU 正则引擎抛了 PatternSyntaxException（消息还是空的），变成
+ * ExceptionInInitializerError → 类永久不可用 → 整卷 LLM 全挂。JVM 上不抛，单测和编译都发现不了。
+ * 所以去 markdown 围栏、取 JSON 对象全改成 indexOf / substring，纯字符串处理。
  */
 object LlmFormat {
 
@@ -324,25 +404,40 @@ object LlmFormat {
         "不能确定", "无法提供", "unknown", "n/a", "none", "无答案"
     )
 
-    internal val FENCE = Regex("```(?:json)?", RegexOption.IGNORE_CASE)
-    internal val JSON_OBJ = Regex("\\{[\\s\\S]*}")
+    /** Markdown 围栏标记。字符串常量，不涉及任何正则引擎 */
+    internal const val FENCE = "```"
 
     fun check(content: String, q: WorkQuestion): Check {
-        val answer = extractAnswer(content)
-            ?: return Check(false, reason = "不是 {\"answer\":...} 结构")
-        return when (q.type) {
-            WorkQuestion.TYPE_SINGLE -> single(answer, q)
-            WorkQuestion.TYPE_MULTI -> multi(answer, q)
-            WorkQuestion.TYPE_JUDGE -> judge(answer)
-            WorkQuestion.TYPE_BLANK, WorkQuestion.TYPE_ESSAY -> text(answer)
-            else -> Check(false, reason = "未知题型 ${q.type}，不采用")
+        return try {
+            val answer = extractAnswer(content)
+                ?: return Check(false, reason = "不是 {\"answer\":...} 结构")
+            when (q.type) {
+                WorkQuestion.TYPE_SINGLE -> single(answer, q)
+                WorkQuestion.TYPE_MULTI -> multi(answer, q)
+                WorkQuestion.TYPE_JUDGE -> judge(answer)
+                WorkQuestion.TYPE_BLANK, WorkQuestion.TYPE_ESSAY -> text(answer)
+                else -> Check(false, reason = "未知题型 ${q.type}，不采用")
+            }
+        } catch (t: Throwable) {
+            // 兜底：解析器自己出任何问题都只算「这题没答案」，绝不把异常抛给调用方
+            Check(false, reason = "解析异常：${describeThrowable(t)}")
         }
     }
 
-    /** 从模型输出里抠出 answer 字段；容忍 ```json 包裹和前后废话 */
+    /**
+     * 从模型输出里抠出 answer 字段；容忍 ```json 包裹和前后废话。
+     *
+     * 全是字符串查找（indexOf / substring / trim），没有一处正则，也不依赖 ICU。
+     */
     fun extractAnswer(content: String): String? {
-        val cleaned = FENCE.replace(content, "").trim()
-        val candidate = JSON_OBJ.find(cleaned)?.value ?: cleaned
+        answerFrom(stripFence(content))?.let { return it }
+        // 围栏不成对（只开了没关 / 只有结尾）时，按「删掉所有围栏」再来一次
+        return answerFrom(removeFences(content))
+    }
+
+    /** 取第一个 `{` 到最后一个 `}`，再解析 JSON 拿 answer */
+    private fun answerFrom(text: String): String? {
+        val candidate = pickJsonObject(text) ?: return null
         val json = runCatching { JSONObject(candidate) }.getOrNull() ?: return null
         val raw = json.opt("answer") ?: return null
         val s = when (raw) {
@@ -354,6 +449,57 @@ object LlmFormat {
             else -> return null
         }
         return s.trim().ifBlank { null }
+    }
+
+    /**
+     * 去掉 ```json 围栏：找第一个 ``` 与最后一个 ```，取中间，再 trim。
+     * 只有一个围栏（没闭合）时，取它后面的剩下全部。
+     */
+    internal fun stripFence(content: String): String {
+        val first = content.indexOf(FENCE)
+        if (first < 0) return content.trim()
+        val after = first + FENCE.length
+        val last = content.lastIndexOf(FENCE)
+        val inner = if (last > after) content.substring(after, last) else content.substring(after)
+        return inner.trim()
+    }
+
+    /** 把内容里所有 ``` 围栏标记删掉（连带紧跟的语言标记 json / JSON / javascript） */
+    internal fun removeFences(content: String): String {
+        val sb = StringBuilder(content.length)
+        var i = 0
+        while (i < content.length) {
+            if (content.startsWith(FENCE, i)) {
+                i += FENCE.length
+                while (i < content.length && content[i].isWhitespace()) i++
+                while (i < content.length && content[i].isLetter()) i++
+                continue
+            }
+            sb.append(content[i])
+            i++
+        }
+        return sb.toString().trim()
+    }
+
+    /** 取第一个 `{` 到最后一个 `}` 之间的内容；取不到（没括号 / 顺序反了）就返回 null */
+    internal fun pickJsonObject(text: String): String? {
+        val start = text.indexOf('{')
+        if (start < 0) return null
+        val end = text.lastIndexOf('}')
+        if (end <= start) return null
+        return text.substring(start, end + 1)
+    }
+
+    /** 文本里是否出现 {"answer" 这种结构（花括号与引号之间允许空白），纯字符串扫描 */
+    fun hasAnswerKey(text: String): Boolean {
+        var from = text.indexOf('{')
+        while (from >= 0) {
+            var i = from + 1
+            while (i < text.length && text[i].isWhitespace()) i++
+            if (text.startsWith("\"answer\"", i)) return true
+            from = text.indexOf('{', from + 1)
+        }
+        return false
     }
 
     private fun single(raw: String, q: WorkQuestion): Check {
