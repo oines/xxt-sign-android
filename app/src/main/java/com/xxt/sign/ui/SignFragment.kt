@@ -4,6 +4,10 @@ import android.Manifest
 import android.annotation.SuppressLint
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.graphics.Matrix
+import android.net.Uri
 import android.os.Bundle
 import android.view.LayoutInflater
 import android.view.View
@@ -28,6 +32,7 @@ import com.xxt.sign.databinding.DialogLocationBinding
 import com.xxt.sign.databinding.FragmentSignBinding
 import com.xxt.sign.net.CxApi
 import com.xxt.sign.net.CxSession
+import com.xxt.sign.net.QrImageDecoder
 import com.xxt.sign.net.QrPayload
 import com.xxt.sign.net.QrParser
 import com.xxt.sign.net.SignOptions
@@ -47,7 +52,7 @@ import java.io.File
  * 交互只保留一个主按钮：点「一键签到 / 签退」→ 检测出所有账号进行中的活动 →
  * 列出来选一个 → **App 按活动类型自己决定该干什么**：
  *
- *   二维码 → 弹扫码，所有账号共用这同一份 enc
+ *   二维码 → 弹扫码，可选相机或相册图片，所有账号共用这同一份 enc
  *   手势/签到码 → 服务端有签到码就用，没有才问一次
  *   位置 → 用存过的坐标，没有才让填
  *   拍照 → 用存过的图，没有才让选
@@ -104,6 +109,28 @@ class SignFragment : Fragment() {
         if (granted) launchScanner() else {
             pendingScanTarget = null
             showStatus("没有相机权限，无法扫码")
+        }
+    }
+
+    /** 相册里的二维码图：不用相机权限，选图后交给 ZXing 解 */
+    private val galleryQrPicker = registerForActivityResult(
+        ActivityResultContracts.GetContent()
+    ) { uri ->
+        if (uri == null) {
+            pendingScanTarget = null
+            showStatus("已取消选择图片")
+            return@registerForActivityResult
+        }
+        viewLifecycleOwner.lifecycleScope.launch {
+            showStatus("正在识别相册里的二维码…")
+            val text = withContext(Dispatchers.IO) {
+                runCatching { decodeQrFromUri(uri) }.getOrNull()
+            }
+            if (text.isNullOrBlank()) {
+                showStatus("图片里没有识别到二维码，换一张试试")
+            } else {
+                onQrContent(text)
+            }
         }
     }
 
@@ -409,6 +436,19 @@ class SignFragment : Fragment() {
     }
 
     private fun requestScan() {
+        MaterialAlertDialogBuilder(requireContext())
+            .setTitle("二维码签到")
+            .setItems(arrayOf("打开相机扫码", "从相册选择二维码")) { _, which ->
+                when (which) {
+                    0 -> startCameraScan()
+                    1 -> galleryQrPicker.launch("image/*")
+                }
+            }
+            .setNegativeButton("取消", null)
+            .show()
+    }
+
+    private fun startCameraScan() {
         val granted = ContextCompat.checkSelfPermission(requireContext(), Manifest.permission.CAMERA) ==
             PackageManager.PERMISSION_GRANTED
         if (granted) launchScanner() else cameraPermLauncher.launch(Manifest.permission.CAMERA)
@@ -422,6 +462,43 @@ class SignFragment : Fragment() {
                 .setBeepEnabled(false)
                 .setOrientationLocked(true)
         )
+    }
+
+    /**
+     * 从相册图片解二维码。先按最长边缩到 1600 以内，避免大图 OOM；
+     * 解码失败再依次转 90/180/270 度试一次（相册图可能带方向信息）。
+     */
+    private fun decodeQrFromUri(uri: Uri): String? {
+        val resolver = requireContext().contentResolver
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        resolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, bounds) }
+        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
+
+        var sample = 1
+        while (bounds.outWidth / sample > 1600 || bounds.outHeight / sample > 1600) sample *= 2
+        val opts = BitmapFactory.Options().apply { inSampleSize = sample }
+        val src = resolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, opts) }
+            ?: return null
+
+        return try {
+            decodeBitmap(src) ?: listOf(90f, 180f, 270f).firstNotNullOfOrNull { degrees ->
+                val matrix = Matrix().apply { postRotate(degrees) }
+                val rotated = Bitmap.createBitmap(src, 0, 0, src.width, src.height, matrix, true)
+                try {
+                    decodeBitmap(rotated)
+                } finally {
+                    if (rotated !== src) rotated.recycle()
+                }
+            }
+        } finally {
+            src.recycle()
+        }
+    }
+
+    private fun decodeBitmap(bitmap: Bitmap): String? {
+        val pixels = IntArray(bitmap.width * bitmap.height)
+        bitmap.getPixels(pixels, 0, bitmap.width, 0, 0, bitmap.width, bitmap.height)
+        return QrImageDecoder.decodePixels(pixels, bitmap.width, bitmap.height)
     }
 
     /** 没先选活动就直接扫码：找对应活动再签 */
