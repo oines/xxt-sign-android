@@ -65,7 +65,12 @@ class CourseAuditor(
 
         scope.forEachIndexed { i, ch ->
             onProgress("检查 ${i + 1}/${scope.size}：${ch.title}")
-            // 1) 章节目录的已完成图标：最可信，也最省请求
+            // 1) 章节目录的已完成图标：最可信，也最省请求。
+            //
+            // **但只对「确实有任务点」的章节可信**（jobCount > 0）。
+            // 阅读任务不算任务点，平台会把「13.1 阅读」这种章节标成「已完成任务点 0/0」，
+            // finished 因此为 true；若在这里按图标跳过，阅读任务永远扫不到。
+            // jobCount == 0 的章节一律老老实实扫一遍卡片（空章节只会多发 1 个请求）。
             if (ch.finished) {
                 val n = ch.jobCount.coerceAtLeast(0)
                 inputs.add(ChapterAuditInput(ch.title, ChapterCheck(n, n, 0, 0, fromIcon = true)))

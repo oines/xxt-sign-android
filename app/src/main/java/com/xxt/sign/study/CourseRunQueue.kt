@@ -261,6 +261,7 @@ object CourseRunQueue {
             LogStore.add("[文档] 设置里关了文档任务点，跳过", true)
         }
 
+
         // 3) 视频：交给现有刷课引擎（并发按设置，默认 1），带心跳
         // 只用体检结论：体检说没有视频缺口，就是真的没有，不要拿「未完成章节」再猜一遍
         val videoChapters = audit.videoChapters
@@ -504,7 +505,8 @@ object CourseRunQueue {
                 submitWaitMaxSec = Settings.quizSubmitWaitMax,
                 gapSeconds = Settings.quizGapSeconds,
                 fontThreshold = Settings.quizFontThreshold,
-                hitThreshold = Settings.quizHitThreshold
+                hitThreshold = Settings.quizHitThreshold,
+                llmFallback = Settings.quizLlmFallback
             ),
             decoderFactory = { b64 ->
                 FontBytes.decode(b64)?.let { bytes ->

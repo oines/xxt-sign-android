@@ -1,4 +1,4 @@
-plugins {
+﻿plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
 }
@@ -12,8 +12,8 @@ android {
         applicationId = "com.xxt.sign"
         minSdk = 24
         targetSdk = 34
-        versionCode = 5
-        versionName = "1.4"
+        versionCode = 57
+        versionName = "1.10.39"
     }
 
     buildTypes {
@@ -67,3 +67,4 @@ dependencies {
     testImplementation("androidx.test:core:1.6.1")
     testImplementation("org.json:json:20240303")
 }
+

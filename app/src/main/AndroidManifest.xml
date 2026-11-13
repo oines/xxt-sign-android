@@ -33,6 +33,11 @@
             android:exported="false"
             android:foregroundServiceType="dataSync" />
 
+        <service
+            android:name=".work.QuizService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
+
 
         <activity
             android:name=".ui.CaptchaActivity"
@@ -40,6 +45,13 @@
             android:configChanges="orientation|screenSize|keyboardHidden"
             android:theme="@style/Theme.XXTSign" />
 
+        <!-- 自定义扫码页：默认的 zxing CaptureActivity 是单次对焦、无场景模式，
+             扫远处大屏经常「看得见但扫不上」。这里换成连续对焦 + 条码场景模式。 -->
+        <activity
+            android:name=".ui.QrCaptureActivity"
+            android:exported="false"
+            android:screenOrientation="portrait"
+            android:theme="@style/Theme.XXTSign" />
         <activity
             android:name=".ui.WebAuthActivity"
             android:exported="false"
@@ -62,6 +74,10 @@
             android:name=".ui.QuizDetailActivity"
             android:exported="false"
             android:label="做题详情" />
+        <activity
+            android:name=".ui.HomeworkDetailActivity"
+            android:exported="false"
+            android:label="作业详情" />
 
     </application>
 

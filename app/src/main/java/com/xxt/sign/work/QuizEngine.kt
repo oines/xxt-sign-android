@@ -16,7 +16,15 @@ data class QuizConfig(
     val gapSeconds: Int = 90,
     val fontThreshold: Float = 0.86f,
     /** 命中率低于它 → 照交，但标「低置信，建议回看」 */
-    val hitThreshold: Float = 0.8f
+    val hitThreshold: Float = 0.8f,
+    /**
+     * **字体识别不出来时的 LLM 兜底**（独立开关，默认关）。
+     *
+     * 和 [quizLlmEnabled] 完全无关：
+     *  · [quizLlmEnabled]（在 Settings 里）= 「用大模型做题」主开关，用户按需开
+     *  · 这个 = 「字体解不出来时，额外允许大模型猜一把」，默认关
+     */
+    val llmFallback: Boolean = false
 )
 
 /**
@@ -43,6 +51,8 @@ class QuizEngine(
     private val onQuestion: (QuizQuestionLive) -> Unit = {},
     /** 提交前等待开始；参数是秒数 */
     private val onSubmitWait: (Int) -> Unit = {},
+    /** 用户点了「提前交卷」：中断剩余题目/等待，直接用当前答案提交 */
+    private val shouldSubmitNow: () -> Boolean = { false },
     /** 用户手改的答案；提交前按 qid 覆盖自动答案 */
     private val overrideAnswer: (String) -> String? = { null }
 ) {
@@ -87,46 +97,72 @@ class QuizEngine(
             page.questions.flatMap { q -> listOf(q.stem) + q.options.map { it.text } }
         )
         if (fontStats != null) {
+            // 只写日志，不再往详情页推「多少个字识别不确定」。
+            //
+            // 原因：这个数字依赖相似度阈值，而阈值是统计量，不是「错了几个字」的真值。
+            // 真机上出现过「题干全对、却报 9 个字不确定」的情况，提示反而制造焦虑。
+            // 字体质量只留日志给排障用。
             log(fontStats.report(), true)
-            if (fontStats.unreadable) {
-                log(
-                    "[测验] ${job.chapterTitle} 这卷字体无法识别（中位 ${"%.2f".format(fontStats.median)}），不硬答",
-                    false
-                )
-                return result(
-                    job, false, 0, page.questionCount,
-                    "这卷字体无法识别，未作答", needsHuman = true
-                )
-            }
         }
 
         val outcomes = mutableListOf<QuestionOutcome>()
         val submitAnswers = LinkedHashMap<String, String>()
         val provider = answers
 
-        page.questions.forEachIndexed { index, q ->
-            runCatching { onStep(index + 1, page.questions.size) }
+        val totalQuestions = page.questions.size
+        for ((index, q) in page.questions.withIndex()) {
+            if (shouldSubmitNow()) break
+
+            runCatching { onStep(index + 1, totalQuestions) }
             val stem = decode(decoder, q.stem)
             val opts = q.options.map { it.copy(text = decode(decoder, it.text).text) }
             val decodedQ = q.copy(stem = stem.text, options = opts)
-            val weak = (stem.weak + q.options.flatMap { decode(decoder, it.text).weak }).distinct()
             val no = index + 1
 
-            // 容错：整题就那么两三个字认不准时，仍然送去猜，只是结果要标「有 N 个字不确定」。
-            // 真机上出现过「差 2 个字整卷留空」——那是把整份卷判死的过严策略。
-            val totalChars = (stem.text.length + opts.sumOf { it.text.length }).coerceAtLeast(1)
-            val weakRatioOk = weak.size * 100 <= totalChars * MAX_WEAK_PERCENT
-            val tolerableWeak = weak.size <= MAX_WEAK_CHARS && weakRatioOk
-            val weakNote = if (weak.isNotEmpty() && tolerableWeak) "（有 ${weak.size} 个字不确定）" else ""
+            // 识别质量不再逐题提示（用户明确要求去掉），题干/选项照常展示。
+            val weakNote = ""
+            val warning = ""
+
+            // 拟人节奏：每题停留 8–20 秒。先在识别完题目时把题干/选项推给详情页，
+            // 再去查题库/大模型；这样详情页不用等答案返回才出现。
+            val waitMs = randomBetween(config.perQuestionMinSec, config.perQuestionMaxSec)
+            val waitSec = ((waitMs + 999) / 1000).toInt()
+            emitQuestion(
+                job = job, q = q, stem = stem.text, options = opts,
+                answer = "", source = "识别中", llmRaw = "", llmError = "",
+                warning = warning,
+                correctedStem = "", correctedOptions = emptyList(), searchSummary = "",
+                index = no, total = totalQuestions, waitSeconds = 0
+            )
+            if (shouldSubmitNow()) break
 
             provider?.clearLlmRaw()
+            // 大模型有两个**互相独立**的开关，别混：
+            //
+            //  · Settings.quizLlmEnabled（+ 填了 key）= 「用大模型做题」主开关。
+            //    用户要用的就是这个，开了就正常参与答题（题库优先、没命中再问模型）。
+            //  · config.llmFallback = 「字体识别不出来时的纠错兜底」，**默认关**。
+            //    打开后，字体解不出/认不准的题会让大模型**优先**作答并按上下文纠错；
+            //    关闭时完全不受字体质量影响 —— 这正是用户要的：
+            //    之前「题干全对却被 LLM 纠错改错」就是因为它默认开着。
+            val fontUnsure = stem.weak.isNotEmpty()
+            val preferLlm = fontUnsure && config.llmFallback
+            val llmHint = if (preferLlm) {
+                "题干或选项可能因字体反解出现少量错字，请结合上下文还原题意后再作答。"
+            } else {
+                ""
+            }
+            if (preferLlm && provider?.configured == true) {
+                log("[测验] 第${no}题 字体识别不确定 + 已开兜底，交大模型优先作答", false)
+            }
             val answer: QuizAnswer? = when {
-                weak.isNotEmpty() && !tolerableWeak -> null
                 provider == null || !provider.configured -> null
                 // catch Throwable：类初始化错误（ExceptionInInitializerError / NoClassDefFoundError）
                 // 不是 Exception，用 runCatching 会静默吞掉，日志里只剩「都没命中」没有原因
                 else -> try {
-                    provider.search(decodedQ)
+                    // allowLlm 恒为 true：只要用户开了大模型做题，题库没命中就该问模型，
+                    // 不受字体质量开关影响。llmFallback 只决定要不要「优先」问。
+                    provider.search(decodedQ, preferLlm = preferLlm, hint = llmHint, allowLlm = true)
                 } catch (c: CancellationException) {
                     throw c
                 } catch (t: Throwable) {
@@ -136,15 +172,6 @@ class QuizEngine(
             }
 
             when {
-                weak.isNotEmpty() && !tolerableWeak -> {
-                    val why = stem.reason.ifBlank {
-                        "有 ${weak.size} 个字认不出来（占这道题 ${weak.size * 100 / totalChars}%），怕答错，先留着"
-                    }
-                    log("[测验] 第${no}题 ${WorkQuestion.typeName(q.type)}：$why", false)
-                    outcomes.add(
-                        QuestionOutcome(q.qid, q.type, WorkParser.shortStem(stem.text), "", "待复核", false)
-                    )
-                }
                 answer == null -> {
                     val why = provider?.lastLlmError?.takeIf { it.isNotBlank() }?.let { "（$it）" }.orEmpty()
                     log("[测验] 第${no}题 ${WorkQuestion.typeName(q.type)} 题库/LLM 都没命中$why，留空", false)
@@ -167,54 +194,51 @@ class QuizEngine(
                 }
             }
 
-            // 拟人节奏：每题停留 8–20 秒。停留期间 UI 展示题干/答案/大模型输出，
-            // 用户可以改选项；最终提交前会按 overrideAnswer 覆盖。
-            val waitMs = randomBetween(config.perQuestionMinSec, config.perQuestionMaxSec)
-            val waitSec = ((waitMs + 999) / 1000).toInt()
-            runCatching {
-                onQuestion(
-                    QuizQuestionLive(
-                        courseId = job.courseId,
-                        courseTitle = job.courseTitle,
-                        chapterId = job.chapterId,
-                        chapterTitle = job.chapterTitle,
-                        qid = q.qid,
-                        type = q.type,
-                        stem = stem.text,
-                        options = opts,
-                        answer = answer?.value.orEmpty(),
-                        source = when {
-                            answer != null -> answer.source + weakNote
-                            weak.isNotEmpty() && !tolerableWeak -> "待复核$weakNote"
-                            else -> "未命中"
-                        },
-                        llmRaw = if (answer?.source?.startsWith("LLM") == true) {
-                            provider?.lastLlmRaw.orEmpty()
-                        } else {
-                            ""
-                        },
-                        llmError = if (answer == null && provider?.configured == true) {
-                            provider?.lastLlmError.orEmpty()
-                        } else {
-                            ""
-                        },
-                        index = index + 1,
-                        total = page.questions.size,
-                        waitSeconds = waitSec
-                    )
+            if (answer != null &&
+                (answer.correctedStem.isNotBlank() || answer.correctedOptions.isNotEmpty())
+            ) {
+                log(
+                    "[LLM] 第${no}题已自动纠正题干/选项" +
+                        if (answer.correctedStem.isNotBlank()) "（题干 ${answer.correctedStem.length} 字）" else "",
+                    true
                 )
             }
+
+            // 查完答案再推一次详情，带上题库/LLM 结果；等待倒计时从这时开始算。
+            val sourceText = when {
+                answer != null -> answer.source + weakNote
+                else -> "未命中" + weakNote
+            }
+            emitQuestion(
+                job = job, q = q, stem = stem.text, options = opts,
+                answer = answer?.value.orEmpty(),
+                source = sourceText,
+                llmRaw = if (answer?.source?.startsWith("LLM") == true) provider?.lastLlmRaw.orEmpty() else "",
+                llmError = if (answer == null && provider?.configured == true) provider?.lastLlmError.orEmpty() else "",
+                warning = warning,
+                correctedStem = answer?.correctedStem.orEmpty(),
+                correctedOptions = answer?.correctedOptions.orEmpty(),
+                searchSummary = answer?.searchSummary.orEmpty(),
+                index = no, total = totalQuestions, waitSeconds = waitSec
+            )
+            if (shouldSubmitNow()) break
+
             sleeper(waitMs)
+            if (shouldSubmitNow()) break
         }
 
         val total = page.questions.size
+        fun manualAnswer(q: WorkQuestion): String? =
+            runCatching { overrideAnswer(q.qid) }.getOrNull()?.takeIf { it.isNotBlank() }
 
-        if (submitAnswers.isEmpty()) {
+        val hasManualAnswer = page.questions.any { manualAnswer(it) != null }
+        val manualSubmit = shouldSubmitNow()
+
+        if (submitAnswers.isEmpty() && !hasManualAnswer) {
             log("[测验] ${job.chapterTitle} · ${page.title} 一题都没答上，不交白卷", false)
             return result(
                 job, false, 0, total,
-                "$total 题一题都没答上（字认不准 ${outcomes.count { it.source == "待复核" }} 题，" +
-                    "题库没答案 ${outcomes.count { it.source == "未命中" }} 题），这卷没交",
+                "$total 题一题都没答上（题库没答案 ${outcomes.count { it.source == "未命中" }} 题），这卷没交",
                 outcomes,
                 hitRate = 0f
             )
@@ -228,16 +252,22 @@ class QuizEngine(
             null
         }
 
-        // 答完到提交之间再等一段；这段时间用户还可以在详情卡里改选项
-        val submitWaitMs = randomBetween(config.submitWaitMinSec, config.submitWaitMaxSec)
-        runCatching { onSubmitWait(((submitWaitMs + 999) / 1000).toInt()) }
-        sleeper(submitWaitMs)
+        // 答完到提交之间再等一段；这段期间用户还可以在详情里改选项。
+        // 用户点「提前交卷」时不等待，也不显示提交前倒计时。
+        if (!manualSubmit) {
+            val submitWaitMs = randomBetween(config.submitWaitMinSec, config.submitWaitMaxSec)
+            runCatching { onSubmitWait(((submitWaitMs + 999) / 1000).toInt()) }
+            sleeper(submitWaitMs)
+        }
 
         // 用户手改的答案覆盖自动答案（多选/判断也按页面需要的值存）
         val finalAnswers = LinkedHashMap(submitAnswers)
         page.questions.forEach { q ->
-            val manual = runCatching { overrideAnswer(q.qid) }.getOrNull()
-            if (!manual.isNullOrBlank()) finalAnswers[q.qid] = manual
+            manualAnswer(q)?.let { finalAnswers[q.qid] = it }
+        }
+        if (finalAnswers.isEmpty()) {
+            log("[测验] ${job.chapterTitle} · ${page.title} 没有可提交的答案，不交白卷", false)
+            return result(job, false, 0, total, "没有可提交的答案，这卷没交", outcomes)
         }
         if (finalAnswers.size > submitAnswers.size) {
             log("[测验] 提交前采用用户手改答案 ${finalAnswers.size - submitAnswers.size} 题", true)
@@ -283,27 +313,68 @@ class QuizEngine(
         val rateText = "命中 ${finalAnswers.size}/$total（${(hitRate * 100).toInt()}%）"
         val low = hitRate < config.hitThreshold
         val blank = (total - finalAnswers.size).coerceAtLeast(0)
-        // 留空的题分两类：字认不准、题库/大模型没答案。别混成一句「没把握」
-        val weakSkipped = outcomes.count { it.source == "待复核" }
-        val missSkipped = (blank - weakSkipped).coerceAtLeast(0)
         val msg = buildString {
             if (submitOk) append(mode).append("：").append(rateText)
             else append("提交失败：").append(submitMessage).append("｜").append(rateText)
             append("｜").append(total).append(" 题：").append(finalAnswers.size).append(" 题答上")
-            if (weakSkipped > 0) append("、").append(weakSkipped).append(" 题因字认不准没敢答")
-            if (missSkipped > 0) append("、").append(missSkipped).append(" 题题库没答案")
+
+            if (blank > 0) append("、").append(blank).append(" 题没答案/留空")
             if (low) append("｜低置信，建议回看")
         }
         log("[测验] ${job.chapterTitle} · ${page.title} $msg", submitOk && !low)
 
         return result(
-            job, submitOk, submitAnswers.size, total, msg, outcomes,
+            job, submitOk, finalAnswers.size, total, msg, outcomes,
             hitRate = hitRate, score = score,
             fontReference = fontStats?.reference.orEmpty(),
             fontMean = fontStats?.mean ?: 0f,
             fontMin = fontStats?.min ?: 0f,
             fontWeak = fontStats?.weak ?: 0
         )
+    }
+
+    private fun emitQuestion(
+        job: WorkJob,
+        q: WorkQuestion,
+        stem: String,
+        options: List<WorkOption>,
+        answer: String,
+        source: String,
+        llmRaw: String,
+        llmError: String,
+        warning: String,
+        correctedStem: String,
+        correctedOptions: List<WorkOption>,
+        searchSummary: String,
+        index: Int,
+        total: Int,
+        waitSeconds: Int
+    ) {
+        runCatching {
+            onQuestion(
+                QuizQuestionLive(
+                    courseId = job.courseId,
+                    courseTitle = job.courseTitle,
+                    chapterId = job.chapterId,
+                    chapterTitle = job.chapterTitle,
+                    qid = q.qid,
+                    type = q.type,
+                    stem = stem,
+                    options = options,
+                    answer = answer,
+                    source = source,
+                    llmRaw = llmRaw,
+                    llmError = llmError,
+                    warning = warning,
+                    correctedStem = correctedStem,
+                    correctedOptions = correctedOptions,
+                    searchSummary = searchSummary,
+                    index = index,
+                    total = total,
+                    waitSeconds = waitSeconds
+                )
+            )
+        }
     }
 
     private fun decode(decoder: FontDecoder?, text: String): FontDecoder.Decoded =
@@ -360,12 +431,6 @@ class QuizEngine(
     }
 
     companion object {
-        /** 一道题里最多容忍几个认不准的字（超过就留空） */
-        const val MAX_WEAK_CHARS = 3
-
-        /** 认不准的字最多占整题多少百分比（超过就留空） */
-        const val MAX_WEAK_PERCENT = 10
-
         /** 上一份卷子结束的时间：两卷间隔 ≥ gapSeconds，避免连续交卷 */
         @Volatile
         private var lastFinishAt = 0L

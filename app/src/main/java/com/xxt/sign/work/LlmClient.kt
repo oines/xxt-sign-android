@@ -79,7 +79,9 @@ class LlmClient(
     private val timeoutMs: Long = 20_000L,
     private val retryDelayMs: Long = 800L,
     /** 这个模型是「先推理再出正文」，推理档位越低越省、越不干扰 JSON 输出 */
-    private val effort: String = DEFAULT_EFFORT
+    private val effort: String = DEFAULT_EFFORT,
+    /** 答题前是否先用 DeepSeek Search 搜资料，再把摘要交给模型总结 */
+    private val webSearch: Boolean = false
 ) {
 
     /** 最近一次失败原因，给日志用 */
@@ -92,8 +94,14 @@ class LlmClient(
     var lastRaw: String = ""
         private set
 
+    /** 最近一次联网搜索的结果摘要（无搜索/失败时为空） */
+    @Volatile
+    var lastSearchSources: String = ""
+        private set
+
     internal fun clearLastRaw() {
         lastRaw = ""
+        lastSearchSources = ""
     }
 
     /** 外部（[AnswerProvider] 等）catch 到 Throwable 时，把原因写回来，别让日志显示「没有原因」 */
@@ -109,8 +117,10 @@ class LlmClient(
 
     /**
      * 构造请求体。纯函数，方便单测断言 prompt 里包含了题干/选项/题型并且只要 JSON。
+     * [hint] 用于字体反解置信度低时提醒模型：题干/选项里可能有少量错字，先按题意还原再作答。
+     * [searchContext] 是 DeepSeek Search 返回的网页摘要，传给模型做 RAG 总结。
      */
-    fun buildBody(q: WorkQuestion): String {
+    fun buildBody(q: WorkQuestion, hint: String = "", searchContext: String = ""): String {
         val typeName = WorkQuestion.typeName(q.type)
         val builder = StringBuilder()
         builder.append("题型：").append(typeName).append('\n')
@@ -118,6 +128,14 @@ class LlmClient(
         if (q.options.isNotEmpty()) {
             builder.append("选项：\n")
             q.options.forEach { builder.append(it.key).append(". ").append(it.text).append('\n') }
+        }
+        if (searchContext.isNotBlank()) {
+            builder.append("参考资料（来自网页搜索，可能不完整或不准确，优先参考）：\n")
+            builder.append(searchContext.trim()).append('\n')
+            builder.append("请优先依据资料作答；资料不足再用常识，不要编造。\n")
+        }
+        if (hint.isNotBlank()) {
+            builder.append("注意：").append(hint.trim()).append('\n')
         }
         builder.append(
             when (q.type) {
@@ -128,6 +146,13 @@ class LlmClient(
             }
         )
         builder.append("\n只输出 JSON 本身，不要解释、不要 Markdown。")
+        if (hint.isNotBlank()) {
+            builder.append(
+                "\n如果题干/选项里有错字或乱码，请同时在 JSON 中返回纠错结果：" +
+                    "\"stem\" 是还原后的完整题干，\"options\" 是对象（键为 A/B/C/D，值为还原后的选项正文）。" +
+                    "选项字母不要改，没把握的字段可以省略。"
+            )
+        }
 
         val messages = JSONArray()
             .put(JSONObject().put("role", "system").put("content", SYSTEM_PROMPT))
@@ -152,9 +177,42 @@ class LlmClient(
      * 都要留下「一题一行 + 原始响应前 200 字」的日志再留空，绝不静默。
      * 协程取消要原样抛出，不能被兜住。
      */
-    suspend fun answer(q: WorkQuestion): QuizAnswer? = withContext(Dispatchers.IO) {
+    suspend fun answer(q: WorkQuestion, hint: String = ""): QuizAnswer? = withContext(Dispatchers.IO) {
         try {
-            callOnce(q)
+            // 低字体置信：必须先让模型按上下文还原题干/选项，再用还原后的文本去搜索，
+            // 否则搜索用的是乱码题干，结果基本不可用。
+            var effectiveQ = q
+            var corrected: Pair<String, List<WorkOption>>? = null
+            if (hint.isNotBlank()) {
+                corrected = correctQuestion(q, hint)
+                if (corrected != null) {
+                    effectiveQ = q.copy(
+                        stem = corrected.first.ifBlank { q.stem },
+                        options = corrected.second.ifEmpty { q.options }
+                    )
+                }
+            }
+            val searchContext = if (webSearch) searchFor(effectiveQ) else ""
+            // 如果第一次纠错调用没拿到结果，就让最终答题调用同时尝试返回 stem/options，
+            // 兼容模型「只在同一轮里肯纠错」的情况。
+            val answer = callOnce(
+                q = effectiveQ,
+                hint = hint,
+                searchContext = searchContext,
+                askRepair = corrected == null && hint.isNotBlank(),
+                corrected = corrected != null
+            )
+            val repairFromAnswer = answer?.correctedStem.orEmpty() to answer?.correctedOptions.orEmpty()
+            val finalStem = corrected?.first ?: repairFromAnswer.first
+            val finalOptions = corrected?.second ?: repairFromAnswer.second
+            val searchShown = searchContext.ifBlank {
+                if (webSearch) lastSearchSources else ""
+            }
+            return@withContext answer?.copy(
+                correctedStem = finalStem.orEmpty(),
+                correctedOptions = finalOptions.orEmpty(),
+                searchSummary = searchShown
+            )
         } catch (c: CancellationException) {
             throw c
         } catch (t: Throwable) {
@@ -165,15 +223,156 @@ class LlmClient(
         }
     }
 
+    /**
+     * 低字体置信时先做一次「只纠错、不作答」的调用。
+     * 成功返回还原后的题干/选项；失败返回 null，后续仍可基于原文本搜索/作答。
+     */
+    private suspend fun correctQuestion(q: WorkQuestion, hint: String): Pair<String, List<WorkOption>>? {
+        if (!enabled) return null
+        val body = buildCorrectBody(q, hint)
+        val headers = mapOf(
+            "Authorization" to "Bearer $apiKey",
+            "Content-Type" to "application/json"
+        )
+        val resp = runCatching { http.post(endpoint, headers, body, timeoutMs) }.getOrNull()
+        if (resp == null || resp.code !in 200..299) {
+            log("[LLM] 题干纠错失败（${resp?.let { "HTTP ${it.code}" } ?: "连不上"}），用原文本继续", false)
+            return null
+        }
+        val content = runCatching { parseMessage(resp.body).content }.getOrNull()
+        if (content.isNullOrBlank()) return null
+        val repair = parseCorrection(content, q)
+        if (repair != null) {
+            log("[LLM] 已先还原题干/选项，再联网搜索", true)
+        }
+        return repair
+    }
+
+    /** 纠错专用 prompt：只要 JSON 里的 stem/options，不要 answer */
+    private fun buildCorrectBody(q: WorkQuestion, hint: String): String {
+        val builder = StringBuilder()
+        builder.append("题型：").append(WorkQuestion.typeName(q.type)).append('\n')
+        builder.append("题干：").append(q.stem).append('\n')
+        if (q.options.isNotEmpty()) {
+            builder.append("选项：\n")
+            q.options.forEach { builder.append(it.key).append(". ").append(it.text).append('\n') }
+        }
+        builder.append("注意：").append(hint.trim()).append('\n')
+        builder.append(
+            "请只根据上下文还原题干和选项里的错字/乱码，不要作答。" +
+                "只输出 JSON：{\"stem\":\"还原后的完整题干\",\"options\":{\"A\":\"选项正文\",\"B\":\"选项正文\"}}。" +
+                "选项字母不要改；没把握的字段可以省略。"
+        )
+        return JSONObject()
+            .put("model", model.ifBlank { DEFAULT_MODEL })
+            .put("temperature", 0)
+            .put("stream", false)
+            .put(
+                "messages", JSONArray()
+                    .put(JSONObject().put("role", "system").put("content", "你是中文题干校订器，只输出 JSON。"))
+                    .put(JSONObject().put("role", "user").put("content", builder.toString()))
+            )
+            .apply {
+                val eff = effort.trim().lowercase()
+                if (eff in EFFORTS) put("reasoning_effort", eff)
+            }
+            .toString()
+    }
+
+    private fun parseCorrection(content: String, q: WorkQuestion): Pair<String, List<WorkOption>>? {
+        val candidate = LlmFormat.pickJsonObject(LlmFormat.stripFence(content)) ?: return null
+        val json = runCatching { JSONObject(candidate) }.getOrNull() ?: return null
+        val stem = json.optString("stem").trim()
+        val optionsObj = json.optJSONObject("options")
+        val merged = q.options.map { o ->
+            optionsObj?.optString(o.key)?.trim()
+                ?.takeIf { it.isNotBlank() }
+                ?.let { WorkOption(o.key, it) }
+                ?: o
+        }
+        val optionsChanged = merged != q.options
+        if (stem.isBlank() && !optionsChanged) return null
+        return stem to merged
+    }
+
+    /**
+     * 用 DeepSeek Search 搜题干，返回给模型阅读的上下文。
+     * 搜索失败/无结果只记日志，不阻塞正常 LLM 答题。
+     */
+    private suspend fun searchFor(q: WorkQuestion): String {
+        lastSearchSources = ""
+        val query = buildString {
+            append(q.stem.trim().take(100))
+            if (isNotBlank()) append(" 答案")
+        }.take(128)
+        if (query.isBlank()) return ""
+        val req = JSONObject()
+            .put("query", query)
+            .put("count", 5)
+            .put("ori_question", q.stem.take(128))
+            .put("need_content", false)
+        val headers = mapOf(
+            "Authorization" to "Bearer $apiKey",
+            "Content-Type" to "application/json"
+        )
+        val resp = runCatching {
+            http.post(SEARCH_ENDPOINT, headers, req.toString(), timeoutMs)
+        }.getOrNull()
+        if (resp == null || resp.code !in 200..299) {
+            val why = resp?.let { "HTTP ${it.code}" } ?: "连不上"
+            lastSearchSources = "搜索失败（$why），已改为直接作答"
+            log("[LLM] 联网搜索失败（$why），改为直接作答", false)
+            return ""
+        }
+        val root = runCatching { JSONObject(resp.body) }.getOrNull() ?: run {
+            lastSearchSources = "搜索返回格式异常，已改为直接作答"
+            return ""
+        }
+        val results = root.optJSONArray("results") ?: run {
+            lastSearchSources = "搜索没有返回结果，已改为直接作答"
+            return ""
+        }
+        val sb = StringBuilder()
+        for (i in 0 until minOf(results.length(), 5)) {
+            val r = results.optJSONObject(i) ?: continue
+            val summary = r.optString("summary").ifBlank { r.optString("snippet") }
+            if (summary.isBlank()) continue
+            val title = r.optString("title").trim()
+            val url = r.optString("url").trim()
+            val score = r.optDouble("rerank_score", 0.0)
+            if (score > 0 && score < 1.0) continue
+            sb.append('[').append(i + 1).append("] ")
+            if (title.isNotBlank()) sb.append(title).append('\n')
+            sb.append(summary.trim().take(600)).append('\n')
+            if (url.isNotBlank()) sb.append(url).append('\n')
+            if (sb.length > 3500) break
+        }
+        val context = sb.toString().trim()
+        if (context.isBlank()) {
+            lastSearchSources = "搜索没有可用结果，已改为直接作答"
+            log("[LLM] 联网搜索没有可用结果，改为直接作答", false)
+        } else {
+            lastSearchSources = context
+            log("[LLM] 联网搜索到 ${results.length()} 条结果，交给模型总结", true)
+        }
+        return context
+    }
+
     /** [answer] 的实现体；异常统一由 [answer] 兜住并写日志 */
-    private suspend fun callOnce(q: WorkQuestion): QuizAnswer? {
+    private suspend fun callOnce(
+        q: WorkQuestion,
+        hint: String,
+        searchContext: String,
+        askRepair: Boolean,
+        corrected: Boolean
+    ): QuizAnswer? {
         lastError = ""
         lastRaw = ""
         if (!enabled) {
             lastError = "未配置 key"
             return null
         }
-        val body = buildBody(q)
+        val body = buildBody(q, hint, searchContext)
         val headers = mapOf(
             "Authorization" to "Bearer $apiKey",
             "Content-Type" to "application/json"
@@ -230,7 +429,42 @@ class LlmClient(
         }
         // 成功也要留一行：真机排查时要能直接看到模型到底回了哪个选项
         log("[LLM] 答案=${check.value}｜题：${brief(q.stem, 40)}", true)
-        return QuizAnswer(check.value, "LLM·${model.ifBlank { DEFAULT_MODEL }}")
+        val repair = if (askRepair) parseRepair(content, q) else null
+        val tags = mutableListOf<String>()
+        if (searchContext.isNotBlank()) tags += "联网搜索"
+        if (corrected || repair != null) tags += "已自动纠错"
+        val source = buildString {
+            append("LLM·").append(model.ifBlank { DEFAULT_MODEL })
+            if (tags.isNotEmpty()) append("（").append(tags.joinToString("、")).append("）")
+        }
+        return QuizAnswer(
+            value = check.value,
+            source = source,
+            correctedStem = repair?.first.orEmpty(),
+            correctedOptions = repair?.second.orEmpty(),
+            searchSummary = searchContext
+        )
+    }
+
+    /**
+     * 解析大模型同时返回的纠错题干/选项。
+     * 只在 hint 非空时请求；模型没返回或字段不完整就返回 null，不影响答题。
+     */
+    private fun parseRepair(content: String, q: WorkQuestion): Pair<String, List<WorkOption>>? {
+        val candidate = LlmFormat.pickJsonObject(LlmFormat.stripFence(content))
+            ?: return null
+        val json = runCatching { JSONObject(candidate) }.getOrNull() ?: return null
+        val stem = json.optString("stem").trim()
+        val optionsObj = json.optJSONObject("options")
+        val merged = q.options.map { o ->
+            optionsObj?.optString(o.key)?.trim()
+                ?.takeIf { it.isNotBlank() }
+                ?.let { WorkOption(o.key, it) }
+                ?: o
+        }
+        val optionsChanged = merged != q.options
+        if (stem.isBlank() && !optionsChanged) return null
+        return stem to merged
     }
 
     /** 解析/校验抛异常时的统一出口：原因 + 原始响应前 200 字，一题一行 */
@@ -382,6 +616,7 @@ class LlmClient(
     companion object {
         const val DEFAULT_BASE_URL = "https://api.deepseek.com"
         const val DEFAULT_MODEL = "deepseek-chat"
+        const val SEARCH_ENDPOINT = "https://api.deepseek.com/v1/tools/search"
 
         /** 推理档位：low 最省，只填一个字母不需要想太多 */
         const val DEFAULT_EFFORT = "low"

@@ -8,6 +8,12 @@
     <string name="tab_quiz">做题</string>
     <string name="tab_log">日志</string>
 
+    <!-- 做题页右上角的 章节测验 / 作业 切换 -->
+    <string name="action_quiz_mode">作业</string>
+    <string name="action_quiz_mode_back">章节测验</string>
+    <string name="title_homework">作业</string>
+    <string name="title_homework_detail">作业详情</string>
+
     <string name="add_account">添加账号</string>
     <string name="phone">手机号 / 用户名</string>
     <string name="password">密码</string>

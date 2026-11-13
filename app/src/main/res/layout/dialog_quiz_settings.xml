@@ -102,7 +102,14 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="2dp"
-            android:text="题库查不到时，问大模型" />
+            android:text="用大模型做题（题库没命中时问大模型）" />
+
+        <com.google.android.material.materialswitch.MaterialSwitch
+            android:id="@+id/swLlmFallback"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="字体识别不出时让大模型兜底（默认关：题干全对时不会被模型改写）" />
 
         <com.google.android.material.textfield.TextInputLayout
             android:layout_width="match_parent"
@@ -167,6 +174,20 @@
             android:layout_height="wrap_content"
             android:layout_marginTop="2dp"
             android:text="低最省最快；高更稳但更慢，且更容易只出推理没有正文"
+            android:textColor="@color/muted"
+            android:textSize="12sp" />
+
+        <com.google.android.material.materialswitch.MaterialSwitch
+            android:id="@+id/swWebSearch"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="答题前先联网搜索（DeepSeek Search）" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="先用 DeepSeek Search 找网页摘要，再让大模型结合资料总结答案；仅服务地址为 api.deepseek.com 时生效。搜索按成功请求计费（5 元/1000 次）。"
             android:textColor="@color/muted"
             android:textSize="12sp" />
 

@@ -75,6 +75,8 @@ object QuizSettingsDialog {
         v.etThreshold.setText(Settings.quizFontThreshold.toString())
         v.swStoreOnly.isChecked = Settings.quizStoreOnly
         v.swLlm.isChecked = Settings.quizLlmEnabled
+        v.swLlmFallback.isChecked = Settings.quizLlmFallback
+        v.swWebSearch.isChecked = Settings.quizWebSearch
         v.etLlmKey.setText(Settings.quizLlmKey)
         v.etLlmBaseUrl.setText(Settings.quizLlmBaseUrl)
         v.etLlmModel.setText(Settings.quizLlmModel)
@@ -124,6 +126,8 @@ object QuizSettingsDialog {
                 Settings.quizEndpoint = endpoint
                 Settings.quizToken = v.etToken.text?.toString()?.trim().orEmpty()
                 Settings.quizLlmEnabled = v.swLlm.isChecked
+                Settings.quizLlmFallback = v.swLlmFallback.isChecked
+                Settings.quizWebSearch = v.swWebSearch.isChecked
                 Settings.quizLlmKey = v.etLlmKey.text?.toString()?.trim().orEmpty()
                 Settings.quizLlmBaseUrl = v.etLlmBaseUrl.text?.toString()?.trim().orEmpty()
                     .ifBlank { LlmClient.DEFAULT_BASE_URL }

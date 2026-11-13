@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
+    xmlns:tools="http://schemas.android.com/tools"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:orientation="vertical">
@@ -71,6 +72,18 @@
         android:textSize="13sp"
         android:textStyle="bold" />
 
+    <TextView
+        android:id="@+id/tvDetailWarning"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:paddingHorizontal="16dp"
+        android:paddingTop="6dp"
+        android:textColor="@color/accent"
+        android:textSize="13sp"
+        android:textStyle="bold"
+        android:visibility="gone"
+        tools:text="⚠ 本题提示（保留给其它警告使用）" />
+
     <ScrollView
         android:layout_width="match_parent"
         android:layout_height="0dp"
@@ -92,6 +105,18 @@
                 android:text="等待题目…"
                 android:textColor="@color/muted"
                 android:textSize="14sp" />
+
+            <TextView
+                android:id="@+id/tvDetailRepairNote"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:paddingBottom="4dp"
+                android:text="以下题干/选项由大模型根据上下文自动纠错"
+                android:textColor="@color/study_blue"
+                android:textSize="12sp"
+                android:textStyle="bold"
+                android:visibility="gone"
+                tools:visibility="visible" />
 
             <TextView
                 android:id="@+id/tvDetailStem"
@@ -119,6 +144,19 @@
                 android:textSize="12sp" />
 
             <TextView
+                android:id="@+id/tvDetailSearch"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="10dp"
+                android:background="#0D1565C0"
+                android:padding="10dp"
+                android:textColor="@color/muted"
+                android:textIsSelectable="true"
+                android:textSize="12sp"
+                android:visibility="gone"
+                tools:text="联网搜索摘要：\n[1] 标题\n摘要内容…" />
+
+            <TextView
                 android:id="@+id/tvDetailHint"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
@@ -132,4 +170,31 @@
                 android:layout_height="24dp" />
         </LinearLayout>
     </ScrollView>
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:gravity="end"
+        android:orientation="horizontal"
+        android:paddingHorizontal="16dp"
+        android:paddingVertical="8dp">
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/btnDetailSkip"
+            style="@style/Widget.Material3.Button.TextButton"
+            android:layout_width="wrap_content"
+            android:layout_height="44dp"
+            android:insetTop="0dp"
+            android:insetBottom="0dp"
+            android:text="下一题" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/btnDetailSubmit"
+            android:layout_width="wrap_content"
+            android:layout_height="44dp"
+            android:layout_marginStart="12dp"
+            android:insetTop="0dp"
+            android:insetBottom="0dp"
+            android:text="提前交卷" />
+    </LinearLayout>
 </LinearLayout>

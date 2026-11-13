@@ -6,7 +6,10 @@ import java.util.Random
 /**
  * 拟人化的随机延迟。
  *
- * 为什么不用 `Random.nextLong(a, b)`：那是**均匀分布**，而真人操作不是——
+ * 为什么不用 `Random.nextLong(a, b)`：一是那是**均匀分布**，而真人操作不是；
+ * 二是 `java.util.Random.nextLong(long, long)` 是 Java 17 才有的方法，Android 上没有，
+ * 会抛 `NoSuchMethodError`（真机检测签到活动时踩过）。
+ * 所以这里只用 Java 1.0 就有的 `nextInt(bound)` 拼出区间。
  * 大部分动作偏快，偶尔会停一下（看一眼屏幕、想一下、手滑了重来）。
  * 而且固定间隔（比如每次都 400ms）比没有延迟更可疑，那个常数本身就成了特征。
  *
@@ -23,7 +26,7 @@ object Jitter {
         val r = (rnd.nextDouble() + rnd.nextDouble()) / 2.0
         var ms = minMs + ((maxMs - minMs) * r).toLong()
         // 约 12% 概率多停一下，模拟"停顿"
-        if (rnd.nextInt(100) < 12) ms += rnd.nextLong(600, 2500)
+        if (rnd.nextInt(100) < 12) ms += 600L + rnd.nextInt(1901)
         return ms.coerceIn(minMs, maxMs + 2500)
     }
 

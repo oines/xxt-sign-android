@@ -33,6 +33,34 @@ object Settings {
         get() = sp.getString("photo", "") ?: ""
         set(v) = sp.edit().putString("photo", v).apply()
 
+    /**
+     * 「立即签到」要处理的账号（多选）。
+     *
+     * 空集合 = 全部账号（保持老行为，避免升级后一按就什么都不签）。
+     * 非空 = 只对这几个账号拉取签到任务。
+     */
+    var signAccountIds: Set<String>
+        get() = runCatching {
+            val arr = org.json.JSONArray(sp.getString("signAccountIds", "[]"))
+            (0 until arr.length()).map { arr.getString(it) }.toSet()
+        }.getOrDefault(emptySet())
+        set(v) = sp.edit().putString("signAccountIds", org.json.JSONArray(v.toList()).toString()).apply()
+
+    /**
+     * 作业页「按课程过滤」选中的课程（多选，`courseId:clazzId`）。
+     *
+     * **持久化**：下次进来还是这几个课程，不用每次重选。
+     * 空集合 = 全部课程（第一次用、或用户主动清空）。
+     *
+     * 同时决定刷新范围 —— 只刷新这些课程，不再把 14 门课全扫一遍（这就是慢的根源）。
+     */
+    var homeworkCourseFilter: Set<String>
+        get() = runCatching {
+            val arr = org.json.JSONArray(sp.getString("homeworkCourseFilter", "[]"))
+            (0 until arr.length()).map { arr.getString(it) }.toSet()
+        }.getOrDefault(emptySet())
+        set(v) = sp.edit().putString("homeworkCourseFilter", org.json.JSONArray(v.toList()).toString()).apply()
+
     var autoMonitor: Boolean
         get() = sp.getBoolean("auto", false)
         set(v) = sp.edit().putBoolean("auto", v).apply()
@@ -51,6 +79,49 @@ object Settings {
     var gpsOnly: Boolean
         get() = sp.getBoolean("gpsOnly", true)
         set(v) = sp.edit().putBoolean("gpsOnly", v).apply()
+
+    /**
+     * 坐标纠偏：WGS-84 → GCJ-02。**默认开启，这是正确行为。**
+     *
+     * ## 为什么必须开（真机实测数据）
+     *
+     * 虚拟定位 App（高德/腾讯底图）显示的是 **GCJ-02**，注入系统时它会自动换算成
+     * **WGS-84**（GPS 原始数据本该如此）。App 从 `LocationManager` 读到的是 WGS-84。
+     * 学习通按 GCJ-02 校验距离，所以必须转回来：
+     *
+     * ```
+     * 模拟器显示（GCJ-02）   31.889087, 118.902128
+     * App 读到的系统原始     31.891269, 118.897120   ← WGS-84
+     * 做一次 WGS→GCJ         31.889087, 118.902128   ← 与模拟器完全一致
+     * ```
+     *
+     * 不转的话，提交点和教师标注点会差 531 米，签到报「不在可签到范围内」。
+     *
+     * ## 什么时候该关
+     *
+     * 极少数情况：系统/模拟器直接注入的就是 GCJ-02（不做换算），此时再转会偏。
+     * 判断方法：把开关关掉，如果 App 显示的值和地图上选的点一致，就说明不转是对的。
+     *
+     * 只在「用当前定位填充」时生效；手动粘贴的坐标不会被转（粘贴的通常是地图坐标）。
+     */
+    var coordShift: Boolean
+        get() = sp.getBoolean("coordShift", true)
+        set(v) = sp.edit().putBoolean("coordShift", v).apply()
+
+    /**
+     * 一次性把 `coordShift` 复位成「开」。
+     *
+     * 背景：1.10.25 那个版本错误地把纠偏删掉了，并且在弹窗里提供了「关掉纠偏」的按钮，
+     * 很多用户点了之后 `coordShift=false` 被写进配置。现在证明纠偏本来就该开，
+     * 所以升级到本版本时强制复位一次；之后再手动关就不受影响了（用独立标记位判断）。
+     */
+    fun migrateCoordShiftOnce() {
+        if (sp.getBoolean("coordShiftMigrated", false)) return
+        sp.edit()
+            .putBoolean("coordShift", true)
+            .putBoolean("coordShiftMigrated", true)
+            .apply()
+    }
 
     /**
      * 是否假定所有账号在相同的课堂里。
@@ -129,6 +200,7 @@ object Settings {
     var studyDocuments: Boolean
         get() = sp.getBoolean("studyDocuments", true)
         set(v) = sp.edit().putBoolean("studyDocuments", v).apply()
+
 
     /** 正在跑的课程（course.key） */
     var runningCourses: Set<String>
@@ -212,14 +284,17 @@ object Settings {
         get() = sp.getInt("quizSubmitMax", 60).coerceIn(0, 900)
         set(v) = sp.edit().putInt("quizSubmitMax", v.coerceIn(0, 900)).apply()
 
-    /** 两份卷子之间的最小间隔（秒），默认 90 */
+    /** 两份卷子之间的最小间隔（秒），默认 90；下限可调到 0（用户自己承担风控风险） */
     var quizGapSeconds: Int
-        get() = sp.getInt("quizGap", 90).coerceIn(30, 1800)
-        set(v) = sp.edit().putInt("quizGap", v.coerceIn(30, 1800)).apply()
+        get() = sp.getInt("quizGap", 90).coerceIn(0, 1800)
+        set(v) = sp.edit().putInt("quizGap", v.coerceIn(0, 1800)).apply()
 
-    // ------------------------------------------------------------ LLM 兜底
+    // ------------------------------------------------------------ 大模型
 
-    /** LLM 开关。默认关；填了 key 并且打开才会用 */
+    /**
+     * 大模型做题总开关。**这是「用大模型答题」的主开关**，填了 key 并且打开才会调模型。
+     * （和 [quizLlmFallback] 不是一回事：那个只管「字体识别不出来时要不要兜底」，默认关。）
+     */
     var quizLlmEnabled: Boolean
         get() = sp.getBoolean("quizLlmEnabled", false)
         set(v) = sp.edit().putBoolean("quizLlmEnabled", v).apply()
@@ -252,10 +327,32 @@ object Settings {
             .putString("quizLlmEffort", v.lowercase().takeIf { it in setOf("low", "medium", "high") } ?: "low")
             .apply()
 
+    /**
+     * 大模型答题前是否先用 DeepSeek Search 联网找资料。
+     * 搜索到结果后把摘要交给模型总结，能明显提高时政/教材类题的命中率。
+     */
+    var quizWebSearch: Boolean
+        get() = sp.getBoolean("quizWebSearch", true)
+        set(v) = sp.edit().putBoolean("quizWebSearch", v).apply()
+
     /** 字体反解的最低相似度，低于它算「待复核」，不采信 */
     var quizFontThreshold: Float
         get() = sp.getFloat("quizFontThreshold", 0.86f).coerceIn(0.5f, 0.99f)
         set(v) = sp.edit().putFloat("quizFontThreshold", v.coerceIn(0.5f, 0.99f)).apply()
+
+    /**
+     * **字体识别不出时的 LLM 兜底**（独立开关，默认关）。
+     *
+     * 和 [quizLlmEnabled] 完全独立：
+     *  - [quizLlmEnabled] = 用大模型做题（主开关，用户按需开）
+     *  - [quizLlmFallback] = 字体解不出来时，额外把题丢给大模型猜一把
+     *
+     * 默认关，因为大模型会按自己的理解改写题干/选项，把原本正确的题带偏
+     * （用户实际踩过：题干全对，却被 LLM「纠错」改错）。
+     */
+    var quizLlmFallback: Boolean
+        get() = sp.getBoolean("quizLlmFallback", false)
+        set(v) = sp.edit().putBoolean("quizLlmFallback", v).apply()
 
     /** 已勾选要刷的章节，元素形如 "courseId:clazzId#chapterId" */
     var studySelectedChapters: Set<String>
@@ -276,4 +373,9 @@ object Settings {
         set(v) = sp.edit()
             .putString("quizChapters", org.json.JSONArray(v.toList()).toString())
             .apply()
+
+    /** 作业详情页：切到新题时是否自动问 AI（默认关，只有手动点按钮才问） */
+    var homeworkAutoAi: Boolean
+        get() = sp.getBoolean("homeworkAutoAi", false)
+        set(v) = sp.edit().putBoolean("homeworkAutoAi", v).apply()
 }

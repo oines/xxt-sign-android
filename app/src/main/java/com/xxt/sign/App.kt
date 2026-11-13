@@ -13,6 +13,8 @@ class App : Application() {
         ctx = this
         AccountStore.init(this)
         Settings.init(this)
+        // 1.10.25 误删过坐标纠偏，升级时复位一次（详见 Settings.migrateCoordShiftOnce）
+        Settings.migrateCoordShiftOnce()
         StudyCheckStore.init(this)
         StudyCourseStore.init(this)
         CourseAuditStore.init(this)

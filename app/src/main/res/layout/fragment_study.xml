@@ -154,6 +154,8 @@
                 android:layout_marginTop="4dp"
                 android:textSize="13sp"
                 android:text="就绪" />
+
+
         </LinearLayout>
     </com.google.android.material.card.MaterialCardView>
 

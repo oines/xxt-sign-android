@@ -24,6 +24,7 @@ import com.xxt.sign.MonitorService
 import com.xxt.sign.R
 import com.xxt.sign.core.Account
 import com.xxt.sign.core.AccountStore
+import com.xxt.sign.core.GeoCoord
 import com.xxt.sign.core.LocationHelper
 import com.xxt.sign.core.LogStore
 import com.xxt.sign.core.Settings
@@ -45,6 +46,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
+import java.util.Locale
 
 /**
  * 签到页。
@@ -97,8 +99,12 @@ class SignFragment : Fragment() {
         val text = result.contents
         if (text.isNullOrBlank()) {
             pendingScanTarget = null
-            showStatus("已取消扫码")
+            // 区分「用户主动取消」和「扫不出来」：
+            // ScanContract 两种情况都回 null，但 resultCode 不同（CANCELED vs 正常返回空）。
+            showStatus("没有扫到二维码：请让取景框对准二维码、保持 10–20cm，或改用「从相册选择二维码」")
+            LogStore.add("[扫码] 相机扫码未返回内容（取景框内没识别到二维码）", false)
         } else {
+            LogStore.add("[扫码] 识别到二维码（${text.length} 字符）：${text.take(80)}", true)
             onQrContent(text)
         }
     }
@@ -212,6 +218,7 @@ class SignFragment : Fragment() {
         // 隐藏诊断：长按主按钮跑一次自动解验证码
         b.btnSignAll.setOnLongClickListener { diagCaptcha(); true }
         b.btnSettings.setOnClickListener { showSettings() }
+        b.btnPickAccounts.setOnClickListener { showAccountPicker() }
 
         b.swAuto.isChecked = Settings.autoMonitor
         b.swAuto.setOnCheckedChangeListener { _, checked ->
@@ -255,8 +262,69 @@ class SignFragment : Fragment() {
 
     // ---------------------------------------------------------- 主流程
 
+    /**
+     * 「立即签到」实际要处理的账号。
+     *
+     * [Settings.signAccountIds] 为空 = 全部账号（老行为）；非空 = 只处理选中的那几个，
+     * 并且会按当前账号列表过滤一遍（账号被删掉后不会卡在无效 id 上）。
+     */
+    private fun selectedAccounts(): List<Account> {
+        val all = AccountStore.accounts.value
+        val ids = Settings.signAccountIds
+        if (ids.isEmpty()) return all
+        val picked = all.filter { it.id in ids }
+        // 选中的账号全被删了 → 退回全部，否则按钮会变成「什么都没发生」
+        return picked.ifEmpty { all }
+    }
+
+    /**
+     * 账号多选。
+     *
+     * 只影响「立即签到」这次按钮拉取哪些账号的签到任务，不改登录态、不改巡检。
+     * 「全选」= 清空选择集合（等于老的「所有账号」）。
+     */
+    private fun showAccountPicker() {
+        val all = AccountStore.accounts.value
+        if (all.isEmpty()) return showStatus("还没有添加账号")
+
+        val labels = all.map { a ->
+            val n = a.name.ifBlank { a.phone }
+            if (a.hasSession) n else "$n（未登录）"
+        }.toTypedArray()
+        val current = Settings.signAccountIds
+        // 空集合视为全选，勾选状态也要显示成全选
+        val checked = BooleanArray(all.size) { current.isEmpty() || all[it].id in current }
+
+        MaterialAlertDialogBuilder(requireContext())
+            .setTitle("选择要签到的账号（全不勾 = 全部）")
+            .setMultiChoiceItems(labels, checked) { _, which, isChecked -> checked[which] = isChecked }
+            .setPositiveButton("确定") { _, _ ->
+                val sel = all.filterIndexed { i, _ -> checked[i] }.map { it.id }.toSet()
+                Settings.signAccountIds = if (sel.size == all.size) emptySet() else sel
+                refreshOptions()
+                showStatus(accountSummary())
+            }
+            .setNeutralButton("全选") { _, _ ->
+                Settings.signAccountIds = emptySet()
+                refreshOptions()
+                showStatus("已选：全部账号")
+            }
+            .setNegativeButton("取消", null)
+            .show()
+    }
+
+    private fun accountSummary(): String {
+        val all = AccountStore.accounts.value
+        val picked = selectedAccounts()
+        return if (Settings.signAccountIds.isEmpty() || picked.size == all.size) {
+            "签到账号：全部 ${all.size} 个"
+        } else {
+            "签到账号：${picked.size}/${all.size} 个（${picked.joinToString("、") { it.display }}）"
+        }
+    }
+
     private fun doSignAll() {
-        val accounts = AccountStore.accounts.value
+        val accounts = selectedAccounts()
         if (accounts.isEmpty()) return showStatus("还没有添加账号")
         if (running) return toast("上一个任务还在跑")
 
@@ -264,7 +332,8 @@ class SignFragment : Fragment() {
         b.progress.visibility = View.VISIBLE
         adapter.clear()
         results.clear()
-        showStatus("正在检测所有账号的签到…")
+        showStatus(if (accounts.size == 1) "正在检测 ${accounts.first().display} 的签到…"
+        else "正在检测 ${accounts.size} 个账号的签到…")
 
         viewLifecycleOwner.lifecycleScope.launch {
             try {
@@ -292,6 +361,16 @@ class SignFragment : Fragment() {
     private fun showPlanPicker(list: List<SignPlanner.Detected>) {
         pendingPlan.clear()
         pendingPlan.addAll(list)
+
+        // 所有选中账号的签到任务是同一个 → 直接签，不弹选择框、不重复问签到码/二维码。
+        // SignPlanner.execute 会把同一份 signCode / enc 一次性套用到该活动的所有账号上，
+        // 所以二维码 / 数字 / 手势只需要用户输入一次。
+        SignPlanner.singleTask(list)?.let { d ->
+            pendingPlan.clear()
+            showStatus("选中账号的签到任务是同一个，一次性签完：${d.title}")
+            handlePicked(d)
+            return
+        }
         presentNextPlan()
     }
 
@@ -339,8 +418,10 @@ class SignFragment : Fragment() {
     }
 
     private fun planSub(d: SignPlanner.Detected): String {
-        val total = AccountStore.accounts.value.size
-        val who = if (d.accountCount >= total) "全部 $total 个账号"
+        // 用「本次选中的账号数」做分母，而不是全部账号 —— 否则只选 2 个账号时
+        // 会显示成「2 个账号」，看不出是选中范围内的全部。
+        val total = selectedAccounts().size
+        val who = if (d.accountCount >= total) "选中的全部 $total 个账号"
         else "${d.accountCount} 个账号：${d.accountNames.joinToString("、")}"
         val extra = if (d.requirement == SignPlanner.Requirement.NONE) "　可直接签" else ""
         return who + extra
@@ -457,10 +538,22 @@ class SignFragment : Fragment() {
     private fun launchScanner() {
         scanLauncher.launch(
             ScanOptions()
+                // 只扫二维码。别加一维码格式：会让 ZXing 的扫描线走错分支，暗光下更难识别。
                 .setDesiredBarcodeFormats(ScanOptions.QR_CODE)
-                .setPrompt("对准教室大屏上的签到二维码")
+                .setPrompt("对准教室大屏上的签到二维码，尽量让二维码占满取景框")
                 .setBeepEnabled(false)
-                .setOrientationLocked(true)
+                // 关掉方向锁定，交给自定义的 QrCaptureActivity 处理竖屏
+                .setOrientationLocked(false)
+                // 后置主摄（多摄机型必须显式指定）
+                .setCameraId(0)
+                // 扫完立刻返回
+                .setBarcodeImageEnabled(false)
+                // **关键**：用我们自己的扫码页。
+                // 默认的 zxing CaptureActivity 是「单次对焦」，举着手机扫几米外的大屏时
+                // 对焦很容易停在近处，画面看着清楚其实整片都是虚的 —— 表现就是
+                // 「相机有画面、二维码对准了，但怎么都扫不上」。
+                // QrCaptureActivity 里改成了连续对焦 + 条码场景模式 + 中心测光。
+                .setCaptureActivity(QrCaptureActivity::class.java)
         )
     }
 
@@ -501,9 +594,9 @@ class SignFragment : Fragment() {
         return QrImageDecoder.decodePixels(pixels, bitmap.width, bitmap.height)
     }
 
-    /** 没先选活动就直接扫码：找对应活动再签 */
+    /** 没先选活动就直接扫码：找对应活动再签（只在选中的账号范围内找） */
     private fun scanAndSignDirect(payload: QrPayload) {
-        val accounts = AccountStore.accounts.value
+        val accounts = selectedAccounts()
         if (accounts.isEmpty()) return showStatus("还没有添加账号")
         if (running) return toast("上一个任务还在跑")
         running = true
@@ -537,7 +630,7 @@ class SignFragment : Fragment() {
      * 先 best-effort 问一次：拿到 enc 就直接签（不用扫码），拿不到再叫用户扫。
      */
     private fun tryRefreshQrThenScan(d: SignPlanner.Detected) {
-        val accounts = AccountStore.accounts.value
+        val accounts = selectedAccounts()
         if (accounts.isEmpty()) return showStatus("还没有添加账号")
         if (running) return toast("上一个任务还在跑")
         running = true
@@ -557,20 +650,28 @@ class SignFragment : Fragment() {
         }
     }
 
-    /** 执行：所有有该活动的账号逐个签 */
+    /**
+     * 执行：选中账号里、有该活动的那些逐个签。
+     *
+     * 关键点：`qr` / `signCode` / `qrEnc` 是**整批共用**的一份 —— 同一个活动对所有账号来说
+     * 二维码 enc、签到码、手势都完全一样，所以只问用户一次，内部按账号逐个套用。
+     * 这也是「所有账号签到任务相同 → 一次性签完」的实现方式。
+     */
     private fun executePlan(
         d: SignPlanner.Detected,
         qr: QrPayload?,
         signCode: String?,
         qrEnc: String? = null
     ) {
-        val accounts = AccountStore.accounts.value
+        // 只签本次选中的账号。SignPlanner.execute 内部还会按 d.accountIds 再过滤一次，
+        // 这里先传全量账号列表也不会把没选中的签上——但传选中集合更清晰、日志也少。
+        val accounts = selectedAccounts()
         if (running) return toast("上一个任务还在跑")
         running = true
         b.progress.visibility = View.VISIBLE
         adapter.clear()
         results.clear()
-        showStatus("开始签：${d.title}")
+        showStatus("开始签：${d.title}（${accounts.count { it.id in d.accountIds }} 个账号）")
 
         viewLifecycleOwner.lifecycleScope.launch {
             var done = false
@@ -622,6 +723,7 @@ class SignFragment : Fragment() {
         val items = arrayOf(
             "位置坐标　—　${locSummary()}",
             "定位来源　—　${if (Settings.gpsOnly) "仅 GPS（准）" else "自动（取最准）"}",
+            "坐标纠偏　—　${if (Settings.coordShift) "开（系统坐标→地图坐标，推荐）" else "关（用系统原始坐标）"}",
             "拍照签到图片　—　${if (Settings.photoPath.isBlank()) "未选" else "已选"}",
             "课堂范围　—　${courseSummary()}",
             "巡检频率　—　${Settings.intervalSeconds} 秒/轮",
@@ -634,14 +736,50 @@ class SignFragment : Fragment() {
                 when (which) {
                     0 -> showLocationDialog(null)
                     1 -> showGpsSourcePicker()
-                    2 -> photoPicker.launch("image/*")
-                    3 -> showCoursePicker()
-                    4 -> showIntervalPicker()
-                    5 -> previewGesture()
-                    6 -> pickAccountForWebSign(null)
+                    2 -> showCoordShiftPicker()
+                    3 -> showPhotoOptions()
+                    4 -> showCoursePicker()
+                    5 -> showIntervalPicker()
+                    6 -> previewGesture()
+                    7 -> pickAccountForWebSign(null)
                 }
             }
             .setNegativeButton("关闭", null)
+            .show()
+    }
+
+    /**
+     * 坐标纠偏开关（默认开）。
+     *
+     * 虚拟定位 App 用高德底图（GCJ-02）显示，注入系统时会换算成 WGS-84；
+     * 学习通按 GCJ-02 校验，所以必须转回来，否则差 531 米、报「不在可签到范围内」。
+     *
+     * **注意**：绝对不能在这里用 `setMessage` —— `MaterialAlertDialogBuilder` 同时
+     * `setMessage` + `setSingleChoiceItems` 时，部分版本会只渲染 message、把选项列表吞掉，
+     * 表现就是「设置里点进去只有一段文字，选不了」。说明文字放 title。
+     */
+    private fun showCoordShiftPicker() {
+        // 用带状态标记的文案，让用户一眼看出当前是开还是关
+        val modes = arrayOf(
+            "开：系统坐标 → 地图坐标 GCJ-02（推荐）",
+            "关：直接用系统给的原始坐标"
+        )
+        val idx = if (Settings.coordShift) 0 else 1
+        MaterialAlertDialogBuilder(requireContext())
+            .setTitle(
+                "坐标纠偏（当前：${if (Settings.coordShift) "开" else "关"}）\n" +
+                    "开＝显示和提交你在地图上选的点；关＝提交系统原始值。"
+            )
+            .setSingleChoiceItems(modes, idx) { dialog, which ->
+                Settings.coordShift = which == 0
+                dialog.dismiss()
+                refreshOptions()
+                showStatus(
+                    if (Settings.coordShift) "坐标纠偏：开（与地图/学习通坐标一致）"
+                    else "坐标纠偏：关（用系统原始坐标）"
+                )
+            }
+            .setNegativeButton("取消", null)
             .show()
     }
 
@@ -662,16 +800,49 @@ class SignFragment : Fragment() {
         }
     }
 
-    private fun showGpsSourcePicker() {
-        val modes = arrayOf("仅 GPS（准，但室内可能拿不到）", "自动：所有来源取最准的")
-        val idx = if (Settings.gpsOnly) 0 else 1
+    private fun showPhotoOptions() {
+        val hasPhoto = Settings.photoPath.isNotBlank()
+        val options = if (hasPhoto) {
+            arrayOf("选择图片", "恢复默认（清除已选图片）")
+        } else {
+            arrayOf("选择图片")
+        }
+        // 注意：MaterialAlertDialogBuilder 同时 setMessage + setItems 时，部分版本会只显示 message，
+        // 选项列表整个不渲染。这里把说明放到 title，保证选项可见。
         MaterialAlertDialogBuilder(requireContext())
-            .setTitle("定位来源")
+            .setTitle(
+                if (hasPhoto) "拍照签到图片（已选，可恢复默认）"
+                else "拍照签到图片（未选）"
+            )
+            .setItems(options) { _, which ->
+                when (which) {
+                    0 -> photoPicker.launch("image/*")
+                    1 -> resetPhoto()
+                }
+            }
+            .setNegativeButton("取消", null)
+            .show()
+    }
+
+    private fun resetPhoto() {
+        Settings.photoPath = ""
+        runCatching { File(requireContext().filesDir, "sign_photo.png").delete() }
+        refreshOptions()
+        showStatus("拍照签到图片已恢复默认：签到时再现场选择")
+        toast("已恢复默认")
+    }
+
+    private fun showGpsSourcePicker() {
+        val modes = arrayOf("仅 GPS（准，但室内可能拿不到）", "自动：从系统获取并取最准的")
+        val idx = if (Settings.gpsOnly) 0 else 1
+        // 同上：不要同时 setMessage + setSingleChoiceItems，否则选项可能不显示。
+        MaterialAlertDialogBuilder(requireContext())
+            .setTitle("定位来源（只影响取坐标，手动坐标优先）")
             .setSingleChoiceItems(modes, idx) { dialog, which ->
                 Settings.gpsOnly = which == 0
                 dialog.dismiss()
                 refreshOptions()
-                showStatus(if (Settings.gpsOnly) "定位来源：仅 GPS" else "定位来源：自动取最准")
+                showStatus(if (Settings.gpsOnly) "定位来源：仅 GPS" else "定位来源：自动（从系统获取）")
             }
             .setNegativeButton("取消", null)
             .show()
@@ -684,15 +855,23 @@ class SignFragment : Fragment() {
         d.etLon.setText(Settings.longitude)
         d.etAddress.setText(Settings.address)
 
-        // 没存过坐标时，先把系统缓存的位置预填进去。
-        // 室内 GPS 拿不到、而网络定位又依赖 Google 服务（国内经常不可达），
-        // 所以实时定位常常失败；系统缓存那份往往是唯一可用的，不该让用户空着。
+        // 没存过坐标时：
+        // · 自动模式：直接向系统要一次实时定位（填「当前定位」按钮改为强制不用缓存）
+        // · 仅 GPS：先把系统缓存填进来，用户再点「用当前定位填充」实时取
         if (Settings.latitude.isBlank() && Settings.longitude.isBlank()) {
-            val cached = LocationHelper.manager(requireContext())?.let { LocationHelper.bestCached(it) }
-            if (cached != null) {
-                d.etLat.setText(String.format("%.6f", cached.location.latitude))
-                d.etLon.setText(String.format("%.6f", cached.location.longitude))
-                showStatus("已预填系统缓存位置（${cached.provider}·精度 ${cached.accuracy} 米·${cached.ageText}），不对就点「用当前定位填充」")
+            if (!Settings.gpsOnly) {
+                if (hasLocationPermission()) fillCurrentLocation(d) else requestLocationPermission(d)
+            } else {
+                val cached = LocationHelper.manager(requireContext())?.let { LocationHelper.bestCached(it) }
+                if (cached != null) {
+                    val rawLat = cached.location.latitude
+                    val rawLon = cached.location.longitude
+                    fillLatLon(d, rawLat, rawLon)
+                    showStatus(
+                        "已预填系统缓存位置（${cached.provider}·精度 ${cached.accuracy} 米·${cached.ageText}）" +
+                            shiftNote(rawLat, rawLon) + "，不对就点「用当前定位填充」"
+                    )
+                }
             }
         }
         d.btnUseCurrent.setOnClickListener {
@@ -766,15 +945,19 @@ class SignFragment : Fragment() {
                 LocationHelper.current(
                     requireContext(),
                     mode = if (Settings.gpsOnly) LocationHelper.SourceMode.GPS_ONLY
-                    else LocationHelper.SourceMode.AUTO
+                    else LocationHelper.SourceMode.AUTO,
+                    // 「用目前定位填充」必须重新向系统要一次，不能拿系统缓存糊弄；
+                    // 实时拿不到就报错，让用户重试/手填，而不是悄悄提交旧位置。
+                    acceptCachedImmediately = false,
+                    useCache = false
                 )
             }
             if (fix == null) {
-                showStatus("没取到定位")
+                showStatus("没取到实时定位（已忽略系统缓存）")
                 MaterialAlertDialogBuilder(requireContext())
                     .setTitle("取不到定位")
                     .setMessage(
-                        "系统里连一份历史定位都没有，而且实时定位也没返回。\n\n" +
+                        "已经跳过系统缓存，本次实时定位没有返回。\n\n" +
                             "· 到窗边或室外再试（室内收不到卫星）\n" +
                             "· 确认系统「位置信息」已打开\n" +
                             "· 实在不行，教室坐标可搜一下直接手填"
@@ -783,17 +966,61 @@ class SignFragment : Fragment() {
                     .setNegativeButton("手动填写", null)
                     .show()
             } else {
-                d.etLat.setText(String.format("%.6f", fix.location.latitude))
-                d.etLon.setText(String.format("%.6f", fix.location.longitude))
+                val rawLat = fix.location.latitude
+                val rawLon = fix.location.longitude
+                fillLatLon(d, rawLat, rawLon)
                 val src = if (fix.fromCache) "缓存" else "实时"
                 val warn = when {
                     fix.coarse -> "　⚠ 这是粗略定位（${fix.accuracy}m），可能超出签到范围"
                     fix.stale -> "　⚠ 这是 ${fix.ageText} 的位置，不对请手动改"
                     else -> ""
                 }
-                showStatus("已填入定位（$src · ${fix.provider} · 精度 ${fix.accuracy} 米 · ${fix.ageText}）$warn")
+                // 诊断：把「系统给的原始坐标」和「最终要提交的坐标」都打出来。
+                // 只要这两个数不一样，就是纠偏在起作用 —— 排查「模拟器显示的和 App 里的不一致」
+                // 时，这一行能直接定位。
+                val finalLat = d.etLat.text?.toString()?.trim().orEmpty()
+                val finalLon = d.etLon.text?.toString()?.trim().orEmpty()
+                LogStore.add(
+                    "[定位] 系统原始 ${"%.6f".format(Locale.US, rawLat)},${"%.6f".format(Locale.US, rawLon)}" +
+                        " → 将提交 $finalLat,$finalLon" +
+                        "（纠偏=${if (Settings.coordShift) "开" else "关"}）",
+                    true
+                )
+                showStatus(
+                    "已填入定位（$src · ${fix.provider} · 精度 ${fix.accuracy} 米 · ${fix.ageText}）" +
+                        shiftNote(rawLat, rawLon) + warn
+                )
             }
         }
+    }
+
+    /**
+     * 把系统坐标写进输入框。
+     *
+     * **默认做 WGS-84 → GCJ-02 转换**（[Settings.coordShift] 默认开）。
+     *
+     * 真机实测：虚拟定位 App 用高德底图显示 GCJ-02（`31.889087, 118.902128`），
+     * 但注入系统时会换算成 WGS-84（`31.891269, 118.897120`）。
+     * `LocationManager` 交给 App 的是 WGS-84，学习通按 GCJ-02 校验，
+     * 所以必须转回来 —— 转完正好等于模拟器上显示的那个点，误差 0。
+     *
+     * 手动粘贴坐标不走这里，粘贴的通常已经是地图坐标。
+     */
+    private fun fillLatLon(d: DialogLocationBinding, rawLat: Double, rawLon: Double) {
+        val target = if (Settings.coordShift) GeoCoord.wgsToGcj(rawLat, rawLon)
+        else GeoCoord.LatLng(rawLat, rawLon)
+        d.etLat.setText(String.format(Locale.US, "%.6f", target.lat))
+        d.etLon.setText(String.format(Locale.US, "%.6f", target.lon))
+    }
+
+    /** 纠偏时给状态栏补一句「原始坐标 + 差多少米」，方便和地图 App 对点 */
+    private fun shiftNote(rawLat: Double, rawLon: Double): String {
+        if (!Settings.coordShift) return ""
+        val t = GeoCoord.wgsToGcj(rawLat, rawLon)
+        val d = GeoCoord.distanceMeters(rawLat, rawLon, t.lat, t.lon)
+        return String.format(
+            Locale.US, " · 已纠偏为地图坐标（原始 %.6f,%.6f，差 %.0f 米）", rawLat, rawLon, d
+        )
     }
 
     private fun showCoursePicker() {
@@ -990,6 +1217,8 @@ class SignFragment : Fragment() {
 
     private fun refreshOptions() {
         b.tvOptions.text = buildString {
+            append(accountSummary())
+            append('\n')
             append("位置：").append(locSummary())
             append("　｜　拍照：").append(if (Settings.photoPath.isBlank()) "未选" else "已选")
             append('\n')
@@ -997,6 +1226,8 @@ class SignFragment : Fragment() {
             append("　｜　巡检：").append(Settings.intervalSeconds).append(" 秒/轮")
             append("　｜　账号间隔 0-").append(Settings.jitterSeconds).append(" 秒")
         }
+        b.btnPickAccounts.text = if (Settings.signAccountIds.isEmpty()) "选择账号（全部）"
+        else "选择账号（${selectedAccounts().size} 个）"
     }
 
     private fun showStatus(text: String) {

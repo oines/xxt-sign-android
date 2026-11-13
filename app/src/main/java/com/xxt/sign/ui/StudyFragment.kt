@@ -15,12 +15,14 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
 import androidx.recyclerview.widget.LinearLayoutManager
+import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.xxt.sign.core.Account
 import com.xxt.sign.core.AccountStore
 import com.xxt.sign.core.LogStore
 import com.xxt.sign.core.Settings
 import com.xxt.sign.databinding.FragmentStudyBinding
 import com.xxt.sign.sign.SignEngine
+import com.xxt.sign.net.CxSession
 import com.xxt.sign.study.ChapterCheck
 import com.xxt.sign.study.StudyApi
 import com.xxt.sign.study.StudyChapter
@@ -584,6 +586,8 @@ class StudyFragment : Fragment() {
             if (selectedAccount()?.id != accountId) return
             done++
             b.tvCheckProgress.text = "检查任务点 $done/$total：${chapter.title}"
+            // 图标只对「确实有任务点」的章节可信：阅读章节 jobCount=0 且被平台标成已完成，
+            // 直接按图标跳过就永远扫不到它的阅读任务（13.1 阅读 就是这样被漏掉的）。
             if (chapter.finished) {
                 checks[chapter.id] = ChapterCheck(1, 1, 1, 1)
                 failedIds.remove(chapter.id)
@@ -794,6 +798,7 @@ class StudyFragment : Fragment() {
             concurrency = Settings.studyConcurrency,
             speed = Settings.studySpeed
         )
+
 
         if (Build.VERSION.SDK_INT >= 33 &&
             ContextCompat.checkSelfPermission(requireContext(), Manifest.permission.POST_NOTIFICATIONS) !=

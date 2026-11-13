@@ -150,6 +150,7 @@ data class ChapterCheck(
     val otherWorkLeft: Int get() = otherWorks.values.sum()
     val unknownLeft: Int get() = unknownTasks.values.sum()
 
+
     /** 真需要本人出手的：非 workA 的 work、音频（未实现）、认不出的类型 */
     val humanLeft: Int get() = otherWorkLeft + audioLeft + unknownLeft
 

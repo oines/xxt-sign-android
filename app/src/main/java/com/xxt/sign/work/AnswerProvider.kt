@@ -84,10 +84,28 @@ class AnswerProvider(
         llm?.clearLastRaw()
     }
 
-    suspend fun search(question: WorkQuestion): QuizAnswer? = withContext(Dispatchers.IO) {
+    /**
+     * @param preferLlm 先让大模型作答（保留参数以兼容旧调用；主流程不再用它）
+     * @param hint 给模型的额外提示
+     * @param allowLlm 题库没命中时是否允许问大模型。
+     *                 **默认 true**：只要用户在设置里开了「大模型做题」（[quizLlmEnabled]），
+     *                 题库没命中就该问大模型 —— 这正是用户要的行为。
+     *                 只有在「字体识别不出来、又不想让模型瞎猜」这种场景才传 false。
+     */
+    suspend fun search(
+        question: WorkQuestion,
+        preferLlm: Boolean = false,
+        hint: String = "",
+        allowLlm: Boolean = true
+    ): QuizAnswer? = withContext(Dispatchers.IO) {
         if (!configured) return@withContext null
 
-        // 1) 题库优先（纯 LLM 模式跳过）
+        val llmFirst = preferLlm && llmReady && allowLlm
+        if (llmFirst) {
+            askLlm(question, hint)?.let { return@withContext it }
+        }
+
+        // 1) 题库优先（纯 LLM 模式跳过；低置信题也让 LLM 先答过了）
         if (mode == Mode.BANK_FIRST && bankReady) {
             val fromBank = runCatching {
                 limiter.acquire()
@@ -102,21 +120,27 @@ class AnswerProvider(
         }
 
         // 2) 题库没命中（或本来就是纯 LLM 模式）才问大模型
-        if (llmReady) {
-            // 注意：这里绝不能只写 runCatching。真机上 LlmFormat 类初始化失败抛的
-            // ExceptionInInitializerError 不是 Exception，被静默吞掉后整卷都是「都没命中」，
-            // 日志里连原因都没有。所以 catch Throwable、写回 lastError、再留空。
-            val fromLlm = try {
-                llm?.answer(question)
-            } catch (c: CancellationException) {
-                throw c
-            } catch (t: Throwable) {
-                llm?.recordFailure("调用异常：${describeThrowable(t)}")
-                null
-            }
-            if (fromLlm != null) return@withContext fromLlm
+        if (!llmFirst && llmReady && allowLlm) {
+            askLlm(question, hint)?.let { return@withContext it }
         }
         null
+    }
+
+    /**
+     * 调一次大模型，异常统一转成 lastError + 日志，绝不把 Throwable 抛给整卷。
+     */
+    private suspend fun askLlm(q: WorkQuestion, hint: String): QuizAnswer? {
+        // 注意：这里绝不能只写 runCatching。真机上 LlmFormat 类初始化失败抛的
+        // ExceptionInInitializerError 不是 Exception，被静默吞掉后整卷都是「都没命中」，
+        // 日志里连原因都没有。所以 catch Throwable、写回 lastError、再留空。
+        return try {
+            llm?.answer(q, hint)
+        } catch (c: CancellationException) {
+            throw c
+        } catch (t: Throwable) {
+            llm?.recordFailure("调用异常：${describeThrowable(t)}")
+            null
+        }
     }
 
     private fun host(raw: String, def: String): String =

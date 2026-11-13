@@ -100,7 +100,17 @@ data class WorkPage(
 )
 
 /** 一次答题的答案 */
-data class QuizAnswer(val value: String, val source: String, val confidence: Float = 1f)
+data class QuizAnswer(
+    val value: String,
+    val source: String,
+    val confidence: Float = 1f,
+    /** 大模型在低字体置信场景下还原出的题干；空 = 没有纠错结果 */
+    val correctedStem: String = "",
+    /** 大模型还原出的选项；空 = 没有纠错结果 */
+    val correctedOptions: List<WorkOption> = emptyList(),
+    /** 联网搜索得到的资料摘要（已拼成给模型/详情页阅读的文本）；空 = 没搜索 */
+    val searchSummary: String = ""
+)
 
 /**
  * 做题页「详情」卡正在展示的一道题。
@@ -125,6 +135,14 @@ data class QuizQuestionLive(
     val llmRaw: String = "",
     /** 大模型失败原因（成功或未调用则为空） */
     val llmError: String = "",
+    /** 字体识别置信度低等提示；非空时详情页醒目显示，但不影响继续作答 */
+    val warning: String = "",
+    /** 大模型自动纠错后的题干；空 = 没纠错 */
+    val correctedStem: String = "",
+    /** 大模型自动纠错后的选项；空 = 没纠错 */
+    val correctedOptions: List<WorkOption> = emptyList(),
+    /** 联网搜索资料摘要，详情页展示 */
+    val searchSummary: String = "",
     val index: Int = 0,
     val total: Int = 0,
     /** 本题拟人停留秒数，UI 用它显示倒计时 */

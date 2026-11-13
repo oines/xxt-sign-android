@@ -199,6 +199,98 @@ class WorkParserTest {
         assertFalse(stem.contains("选项甲"))
     }
 
+    /**
+     * 真实页面里选项正文不一定在 num_option 自己的 span 里：
+     * 常见是 `<li><span ...>A</span><div>选项正文</div></li>` 或 span 后直接跟文本。
+     * 解析器必须从整行取正文，并且把整行从题干里剔除，否则会出现「题干里带四个选项」。
+     */
+    @Test
+    fun optionTextComesFromRowAndStemDropsOptionContent() {
+        val page = WorkParser.parse(
+            """
+            <div class="singleQuesId" id="question333">
+              <div class="Zy_TItle">3. 以下哪个正确？</div>
+              <input type="hidden" id="answertype333" value="0">
+              <ul>
+                <li><span class="num_option" data="A">A</span><div class="option-content">甲的内容</div></li>
+                <li><span class="num_option" data="B">B</span>乙的内容</li>
+              </ul>
+            </div>
+            """.trimIndent()
+        )
+        val q = page.questions.single()
+        assertEquals(listOf("A", "B"), q.options.map { it.key })
+        assertEquals("甲的内容", q.options[0].text)
+        assertEquals("乙的内容", q.options[1].text)
+        assertTrue(q.stem.contains("以下哪个正确"))
+        assertFalse(q.stem.contains("甲的内容"))
+        assertFalse(q.stem.contains("乙的内容"))
+    }
+
+    @Test
+    fun parsesInlineOptionsWithBareTextNodes() {
+        val page = WorkParser.parse(
+            """
+            <div class="singleQuesId" id="question444">
+              <div class="Zy_TItle">4. 以下哪个正确？</div>
+              <input type="hidden" id="answertype444" value="0">
+              <div class="options"><span class="num_option" data="A">A</span>甲<span class="num_option" data="B">B</span>乙</div>
+            </div>
+            """.trimIndent()
+        )
+        val q = page.questions.single()
+        assertEquals(listOf("A", "B"), q.options.map { it.key })
+        assertEquals("甲", q.options[0].text)
+        assertEquals("乙", q.options[1].text)
+        assertFalse(q.stem.contains("甲"))
+        assertFalse(q.stem.contains("乙"))
+    }
+
+    /**
+     * 真机上有一种页面：选项 span 里只有字母，正文只放在 li/span 的 aria-label 里
+     * （无障碍属性）。这种页面如果只取 text()，就会出现「ABCD 后面没有选项内容」。
+     */
+    @Test
+    fun optionTextFallsBackToAriaLabel() {
+        val page = WorkParser.parse(
+            """
+            <div class="singleQuesId" id="question555">
+              <div class="Zy_TItle">5. 以下哪个正确？</div>
+              <input type="hidden" id="answertype555" value="0">
+              <ul>
+                <li aria-label="A. 甲的内容"><span class="num_option" data="A">A</span></li>
+                <li aria-label="乙的内容"><span class="num_option" data="B">B</span></li>
+              </ul>
+            </div>
+            """.trimIndent()
+        )
+        val q = page.questions.single()
+        assertEquals("甲的内容", q.options[0].text)
+        assertEquals("乙的内容", q.options[1].text)
+        assertFalse(q.stem.contains("甲的内容"))
+        assertFalse(q.stem.contains("乙的内容"))
+    }
+
+    /** 新版页面可能没有 id="question<qid>"，qid 在 singleQuesId 的 data 上 */
+    @Test
+    fun parsesQidFromDataAttributeAndTypeFromTiMu() {
+        val page = WorkParser.parse(
+            """
+            <div class="TiMu singleQuesId" data="900777">
+              <div class="TiMu" data="1">多选题干</div>
+              <ul>
+                <li aria-label="A. 甲"><span class="num_option_dx" data="A">A</span></li>
+                <li aria-label="B. 乙"><span class="num_option_dx" data="B">B</span></li>
+              </ul>
+            </div>
+            """.trimIndent()
+        )
+        val q = page.questions.single()
+        assertEquals("900777", q.qid)
+        assertEquals(WorkQuestion.TYPE_MULTI, q.type)
+        assertEquals(listOf("甲", "乙"), q.options.map { it.text })
+    }
+
     @Test
     fun plainPageHasNoFont() {
         val page = WorkParser.parse("<html><body><div class='ceyan_name'>题量: 0</div></body></html>")

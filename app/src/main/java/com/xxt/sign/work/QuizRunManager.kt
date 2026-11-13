@@ -14,6 +14,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -55,8 +56,10 @@ object QuizRunManager {
         val waitSeconds: Int = 0,
         /** 倒计时结束的绝对时间（epoch ms），详情页据此计算剩余秒数 */
         val waitUntil: Long = 0L,
-        /** 倒计时含义：「本题停留」/「提交前等待」 */
+        /** 倒计时含义：「识别中」/「本题停留」/「提交前等待」 */
         val waitLabel: String = "",
+        /** 刚识别出题干、题库/大模型还在查答案（此时详情页先显示题干和选项） */
+        val searching: Boolean = false,
         /** 用户手改过的答案 qid -> value */
         val overrides: Map<String, String> = emptyMap()
     )
@@ -75,7 +78,46 @@ object QuizRunManager {
     /** 引擎在 IO 线程读、UI 在主线程写，用并发 map */
     private val answerOverrides = ConcurrentHashMap<String, String>()
 
+    /** 用户点「下一题」：只跳过当前拟人停留，不影响后续节奏 */
+    @Volatile
+    private var skipWaitRequested = false
+
+    /** 用户点「提前交卷」：中断剩余题目与等待，直接提交当前答案 */
+    @Volatile
+    private var submitRequested = false
+
     fun isRunning(): Boolean = job?.isActive == true
+
+    /** 详情页「下一题」：跳过当前题剩余停留时间 */
+    fun skipWait() {
+        if (isRunning()) skipWaitRequested = true
+    }
+
+    /** 详情页「提前交卷」：不再答后面的题，使用当前答案立即提交 */
+    fun submitNow() {
+        if (!isRunning()) return
+        submitRequested = true
+        skipWaitRequested = true
+    }
+
+    internal fun shouldSubmitNow(): Boolean = submitRequested
+
+    private fun consumeSkipWait(): Boolean {
+        val requested = skipWaitRequested
+        skipWaitRequested = false
+        return requested
+    }
+
+    /** 引擎的等待：可被「下一题」/「提前交卷」提前打断 */
+    private suspend fun waitOrSkip(ms: Long) {
+        val end = System.currentTimeMillis() + ms.coerceAtLeast(0L)
+        while (true) {
+            if (submitRequested || consumeSkipWait()) return
+            val left = end - System.currentTimeMillis()
+            if (left <= 0L) return
+            delay(left.coerceAtMost(200L).coerceAtLeast(1L))
+        }
+    }
 
     /** 做题页用户切换选项：只影响当前这一份卷子的提交值 */
     fun setAnswerOverride(qid: String, value: String) {
@@ -115,6 +157,8 @@ object QuizRunManager {
 
         val id = ++runId
         answerOverrides.clear()
+        skipWaitRequested = false
+        submitRequested = false
         _state.value = State(
             running = true,
             status = "准备中…",
@@ -153,6 +197,10 @@ object QuizRunManager {
                     },
                     onResult = { course, chapter, result ->
                         if (id == runId) {
+                            // 「提前交卷」只作用于当前这一份卷子：本卷结束后清掉标志，
+                            // 否则下一份卷子会被误判成也要立刻交卷，整个做题进程看起来就“终止”了。
+                            submitRequested = false
+                            skipWaitRequested = false
                             if (result.submitted) {
                                 // 交卷成功后立刻落缓存，章节状态变蓝、复选框熄灭，不用等下一次检查
                                 StudyCheckStore.markQuizDone(accountId, course.key, chapter.id)
@@ -188,7 +236,7 @@ object QuizRunManager {
                         detail = null,
                         waitSeconds = 0,
                         waitUntil = 0L,
-                        waitLabel = "",
+                        waitLabel = "", searching = false,
                         status = "正在做题（${done + 1}/${runCourses.size}）：${course.title}"
                     )
 
@@ -224,7 +272,7 @@ object QuizRunManager {
                         detail = null,
                         waitSeconds = 0,
                         waitUntil = 0L,
-                        waitLabel = "",
+                        waitLabel = "", searching = false,
                         percent = if (runCourses.isEmpty()) 0 else done * 100 / runCourses.size,
                         status = "已完成 $done/${runCourses.size} 门，提交 $submitted 份" +
                             if (human > 0) "，$human 份需人工" else ""
@@ -244,7 +292,7 @@ object QuizRunManager {
                         detail = null,
                         waitSeconds = 0,
                         waitUntil = 0L,
-                        waitLabel = "",
+                        waitLabel = "", searching = false,
                         percent = 100,
                         status = "做题完成：提交 $submitted 份" +
                             if (human > 0) "，$human 份需人工处理" else ""
@@ -309,7 +357,7 @@ object QuizRunManager {
             detail = null,
             waitSeconds = 0,
             waitUntil = 0L,
-            waitLabel = "",
+            waitLabel = "", searching = false,
             status = reason
         )
         LogStore.add("[做题] $reason", false)
@@ -331,7 +379,8 @@ object QuizRunManager {
             submitWaitMaxSec = Settings.quizSubmitWaitMax,
             gapSeconds = Settings.quizGapSeconds,
             fontThreshold = Settings.quizFontThreshold,
-            hitThreshold = Settings.quizHitThreshold
+            hitThreshold = Settings.quizHitThreshold,
+            llmFallback = Settings.quizLlmFallback
         ),
         decoderFactory = { b64 ->
             FontBytes.decode(b64)?.let { bytes ->
@@ -343,6 +392,7 @@ object QuizRunManager {
                 )
             }
         },
+        sleeper = { ms -> waitOrSkip(ms) },
         log = { msg, ok -> LogStore.add(msg, ok) },
         onStep = { index, total ->
             val s = _state.value
@@ -360,17 +410,21 @@ object QuizRunManager {
         onQuestion = { q ->
             val s = _state.value
             if (s.running) {
+                val searching = q.source == "识别中"
+                // 同一道题会回调两次：先「识别中」（题干/选项），再「查完答案」补大模型结果。
+                // 第二次必须替换历史里的同一题，否则详情页切回去还会看到旧的「识别中」。
                 val history = if (s.questions.lastOrNull()?.qid == q.qid) {
-                    s.questions
+                    s.questions.dropLast(1) + q
                 } else {
                     (s.questions + q).takeLast(100)
                 }
                 _state.value = s.copy(
                     detail = q,
                     questions = history,
-                    waitSeconds = q.waitSeconds,
-                    waitUntil = System.currentTimeMillis() + q.waitSeconds * 1000L,
-                    waitLabel = "本题停留"
+                    searching = searching,
+                    waitSeconds = if (searching) 0 else q.waitSeconds,
+                    waitUntil = if (searching) 0L else System.currentTimeMillis() + q.waitSeconds * 1000L,
+                    waitLabel = if (searching) "识别中" else "本题停留"
                 )
             }
         },
@@ -378,12 +432,14 @@ object QuizRunManager {
             val s = _state.value
             if (s.running) {
                 _state.value = s.copy(
+                    searching = false,
                     waitSeconds = seconds,
                     waitUntil = System.currentTimeMillis() + seconds * 1000L,
                     waitLabel = "提交前等待"
                 )
             }
         },
+        shouldSubmitNow = { submitRequested },
         overrideAnswer = { qid -> answerOverrides[qid] }
     )
 
@@ -396,7 +452,9 @@ object QuizRunManager {
             apiKey = key,
             baseUrl = Settings.quizLlmBaseUrl,
             model = Settings.quizLlmModel,
-            effort = Settings.quizLlmEffort
+            effort = Settings.quizLlmEffort,
+            webSearch = Settings.quizWebSearch &&
+                Settings.quizLlmBaseUrl.contains("deepseek.com", ignoreCase = true)
         )
     }
 }

@@ -55,13 +55,14 @@ class LlmClientTest {
         )
     }.toString()
 
-    private fun client(http: LlmHttp) = LlmClient(
+    private fun client(http: LlmHttp, webSearch: Boolean = false) = LlmClient(
         apiKey = "sk-test",
         baseUrl = "https://api.deepseek.com",
         model = "deepseek-flash",
         http = http,
         timeoutMs = 20_000L,
-        retryDelayMs = 0
+        retryDelayMs = 0,
+        webSearch = webSearch
     )
 
     @Test
@@ -87,6 +88,89 @@ class LlmClientTest {
         runBlocking { c.answer(question) }
         assertEquals("https://api.deepseek.com/chat/completions", http.lastUrl)
         assertTrue(http.lastBody.contains("违反安全保障义务"))
+    }
+
+    @Test
+    fun buildBodyIncludesLowConfidenceHint() {
+        val c = client(FakeHttp(mutableListOf()))
+        val body = JSONObject(c.buildBody(question, "题干可能有错字，请先按上下文还原"))
+        val user = body.getJSONArray("messages").getJSONObject(1).getString("content")
+        assertTrue(user.contains("题干可能有错字"))
+        assertTrue(user.contains("注意："))
+    }
+
+    @Test
+    fun lowConfidenceResponseCanCarryCorrectedText() = runBlocking {
+        val corrected = JSONObject().put("stem", "纠正后的题干").put(
+            "options",
+            JSONObject().put("A", "甲").put("B", "乙")
+        ).toString()
+        val http = FakeHttp(
+            mutableListOf(
+                ok(response(corrected)),
+                ok(response(ans("B")))
+            )
+        )
+        val r = client(http).answer(question, "题干可能有错字")
+        assertEquals("B", r?.value)
+        assertEquals("纠正后的题干", r?.correctedStem)
+        assertEquals(listOf("甲", "乙"), r?.correctedOptions?.map { it.text })
+        assertTrue(r?.source?.contains("已自动纠错") == true)
+        assertEquals(2, http.calls)
+    }
+
+    @Test
+    fun lowConfidenceCorrectsBeforeSearching() = runBlocking {
+        val corrected = JSONObject().put("stem", "纠正后的题干").put(
+            "options",
+            JSONObject().put("A", "甲").put("B", "乙")
+        ).toString()
+        val search = JSONObject().put(
+            "results",
+            org.json.JSONArray().put(
+                JSONObject()
+                    .put("title", "资料")
+                    .put("url", "https://example.com")
+                    .put("summary", "搜索摘要")
+                    .put("rerank_score", 2.0)
+            )
+        ).toString()
+        val http = FakeHttp(
+            mutableListOf(
+                ok(response(corrected)),
+                ok(search),
+                ok(response(ans("B")))
+            )
+        )
+        val r = client(http, webSearch = true).answer(question, "题干可能有错字")
+        assertEquals(3, http.calls)
+        assertEquals("B", r?.value)
+        assertTrue(r?.source?.contains("联网搜索") == true)
+        assertTrue(r?.searchSummary?.contains("搜索摘要") == true)
+        assertTrue(http.lastBody.contains("纠正后的题干"))
+        assertTrue(http.lastBody.contains("搜索摘要"))
+    }
+
+    @Test
+    fun webSearchResultsAreFedToLlm() = runBlocking {
+        val search = JSONObject().put(
+            "results",
+            org.json.JSONArray().put(
+                JSONObject()
+                    .put("title", "测试资料")
+                    .put("url", "https://example.com/a")
+                    .put("summary", "这是搜索到的参考资料")
+                    .put("rerank_score", 2.1)
+            )
+        ).toString()
+        val http = FakeHttp(mutableListOf(ok(search), ok(response(ans("B")))))
+        val r = client(http, webSearch = true).answer(question)
+
+        assertEquals(2, http.calls)
+        assertEquals("B", r?.value)
+        assertTrue(r?.source?.contains("联网搜索") == true)
+        assertTrue(http.lastBody.contains("参考资料"))
+        assertTrue(http.lastBody.contains("测试资料"))
     }
 
     @Test

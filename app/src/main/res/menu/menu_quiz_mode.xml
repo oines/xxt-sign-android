@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<menu xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto">
+
+    <!-- 只在「做题」页显示：在 章节测验 / 作业 之间切换（文字按钮，避免深色图标看不清） -->
+    <item
+        android:id="@+id/action_quiz_mode"
+        android:title="@string/action_quiz_mode"
+        app:showAsAction="always" />
+</menu>

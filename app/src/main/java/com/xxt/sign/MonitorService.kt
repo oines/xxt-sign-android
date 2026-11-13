@@ -344,7 +344,8 @@ class MonitorService : Service() {
             submitWaitMaxSec = Settings.quizSubmitWaitMax,
             gapSeconds = Settings.quizGapSeconds,
             fontThreshold = Settings.quizFontThreshold,
-            hitThreshold = Settings.quizHitThreshold
+            hitThreshold = Settings.quizHitThreshold,
+            llmFallback = Settings.quizLlmFallback
         )
         val engine = QuizEngine(
             api = WorkApi(session),

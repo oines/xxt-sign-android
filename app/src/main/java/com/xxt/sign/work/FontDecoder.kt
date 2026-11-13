@@ -71,7 +71,19 @@ class FontDecoder(
     /** 整卷中位数低于它 → 字体无法识别 */
     private val unreadableMedian: Float = 0.6f,
     /** true = 每个字在各套参考字体里取最优（原型验证过的做法） */
-    private val perCharBest: Boolean = true
+    private val perCharBest: Boolean = true,
+    /**
+     * 换字体需要领先多少分。低于这个差距就认定为「险胜」，仍用整卷基准字体。
+     * 防止某套字体靠豆腐块/笔画巧合抢走正确结果（真机踩过，见 [prepare] 里注释）。
+     */
+    private val refSwitchMargin: Float = 0.02f,
+    /**
+     * 最优领先次优这么多 → 就算绝对分数不高也算「有把握」。
+     * 用来区分「字体不像」和「这个字本来就笔画少、任何字体都像」。
+     */
+    private val confidentGap: Float = 0.06f,
+    /** 「有把握」时的分数下限；低于它一律不认（防止两个候选都很像时瞎猜） */
+    private val lowScoreFloor: Float = 0.55f
 ) {
 
     /** 一个字的结果：解出的字 + 相似度 */
@@ -83,6 +95,12 @@ class FontDecoder(
         val score: Float,
         /** 次优候选（同一套里的第二名 / 别的字体里的最高分，取较大的那个） */
         val second: Float,
+        /**
+         * [second] 是否真实存在。
+         * 候选表只有一个字、参考字体也只有一套时，根本没有「次优」可比，
+         * 这时不能把 gap 当成「领先很多」—— 那是没有证据，不是有把握。
+         */
+        val secondKnown: Boolean,
         val ref: String
     )
 
@@ -112,6 +130,10 @@ class FontDecoder(
         /** 间距 < 0.02 的字数（这批就是「看着像所以猜错」的高危字） */
         val gapTight: Int,
         val weak: Int,
+        /** 分数不高但明显领先次优、已放心采用的字数（只记账，不报警） */
+        val uncertain: Int,
+        /** 每套参考字体各自「认对」时的中位分（排障用：能看出哪套字体渲染出了问题） */
+        val refMedians: Map<String, Float>,
         val total: Int,
         val threshold: Float,
         val unreadable: Boolean
@@ -135,9 +157,15 @@ class FontDecoder(
                 append("｜最低 ").append("%.2f".format(min))
                 append("（p10 ").append("%.2f".format(p10))
                 append(" p90 ").append("%.2f".format(p90)).append("）")
-                append("｜存疑 ").append(weak).append("/").append(total)
+                append("｜认不出 ").append(weak).append("/").append(total)
+                if (uncertain > 0) append("（另 ").append(uncertain).append(" 字分数偏低但已确认）")
                 append("｜阈值 ").append("%.2f".format(threshold))
                 if (hits.isNotBlank()) append("｜逐字最优来源：").append(hits)
+                if (refMedians.isNotEmpty()) {
+                    append("｜各套中位：")
+                    append(refMedians.entries.sortedByDescending { it.value }
+                        .joinToString(" ") { "${it.key.take(12)} ${"%.3f".format(it.value)}" })
+                }
             }
         }
     }
@@ -183,63 +211,71 @@ class FontDecoder(
 
         if (vectorsByRef.isEmpty()) return null
 
-        // 每个字在每套参考字体下的最佳匹配（同时记次优，用于算间距）
-        val perChar = HashMap<Char, List<Pair<ReferenceFont, Triple<Char?, Float, Float>>>>()
+        // 每个字在每套参考字体下的**完整候选排序**。
+        //
+        // 关键：不是只留「这套字体的第一名」，而是把每套字体对每个候选字的打分都留着，
+        // 因为判断「这个字认不认得出」必须看 **候选字之间** 的差距，而不是
+        // 「这套字体的第一名」和「那套字体的第一名」的差距。
+        //
+        // 真机踩过：两套字体都认成「属」（0.95 / 0.94），差 0.01，
+        // 老逻辑把这个差当成「次优」，于是把明明认对的字报成「存疑」。
+        // 两套字体意见一致恰恰是**更强的证据**，不是歧义。
+        val perCharScores = HashMap<Char, List<Pair<ReferenceFont, Map<Char, Float>>>>()
         for (ch in chars) {
             val probe = runCatching { source.renderSecret(ch, size) }.getOrNull() ?: continue
-            val scores = vectorsByRef.map { (ref, pool2) ->
-                var bestChar: Char? = null
-                var best = -1f
-                var second = -1f
-                for ((c, v) in pool2) {
-                    val s = cosine(probe, v)
-                    if (s > best) {
-                        second = best
-                        best = s
-                        bestChar = c
-                    } else if (s > second) {
-                        second = s
-                    }
-                }
-                ref to Triple(bestChar, best.coerceAtLeast(0f), second.coerceAtLeast(0f))
+            val perRef = vectorsByRef.map { (ref, pool2) ->
+                val map = HashMap<Char, Float>(pool2.size)
+                for ((c, v) in pool2) map[c] = cosine(probe, v)
+                ref to map
             }
-            perChar[ch] = scores
+            perCharScores[ch] = perRef
         }
-        if (perChar.isEmpty()) return null
+        if (perCharScores.isEmpty()) return null
 
         val byRef = vectorsByRef.map { it.first }
 
-        // 整卷口径下每套参考字体的中位相似度（日志用；perCharBest 时也用来挑兜底字体）
+        // 每套字体「把这个字认成它自己的第一名」时的分数中位数 → 用来挑基准字体
         val refMedian = byRef.map { ref ->
             ref to median(
-                perChar.values.mapNotNull { list ->
-                    list.firstOrNull { it.first == ref }?.second?.second
+                perCharScores.values.mapNotNull { list ->
+                    list.firstOrNull { it.first == ref }?.second?.values?.maxOrNull()
                 }
             )
         }.toMap()
         val bestRef = byRef.maxByOrNull { refMedian[it] ?: 0f } ?: byRef.first()
 
-        // 逐字取最优：哪套字体这个字最像就用哪套
-        val picks: Map<Char, Pick> = perChar.mapValues { (_, list) ->
-            if (perCharBest) {
-                val best = list.maxByOrNull { it.second.second }!!
-                val otherMax = list.filter { it.first != best.first }
-                    .maxOfOrNull { it.second.second } ?: 0f
-                Pick(
-                    char = best.second.first,
-                    score = best.second.second,
-                    second = maxOf(otherMax, best.second.third),
-                    ref = best.first.name
-                )
-            } else {
-                val entry = list.firstOrNull { it.first == bestRef } ?: list.first()
-                Pick(
-                    char = entry.second.first,
-                    score = entry.second.second,
-                    second = entry.second.third,
-                    ref = entry.first.name
-                )
+        // 逐字裁决：
+        //
+        // 1) 对每个**候选字**，取它在所有参考字体里的最高分（多字体投票取最好）；
+        // 2) 按这个汇总分排序，第一名就是答案；
+        // 3) 间距 = 第一名候选 − 第二名**候选字** 的汇总分。
+        //
+        // 这样「两套字体都认成属」只会让「属」的汇总分更高、间距更大，
+        // 而不会像老逻辑那样凭空造出一个 0.01 的假歧义。
+        data class Ranked(val char: Char, val score: Float, val ref: String)
+
+        val picks: Map<Char, Pick> = perCharScores.mapValues { (_, perRef) ->
+            // 汇总：候选字 -> (最高分, 该分来自哪套字体)
+            val agg = LinkedHashMap<Char, Pair<Float, String>>()
+            for ((ref, map) in perRef) {
+                for ((c, s) in map) {
+                    val cur = agg[c]
+                    if (cur == null || s > cur.first) agg[c] = s to ref.name
+                }
             }
+            val ranked = agg.entries
+                .map { Ranked(it.key, it.value.first, it.value.second) }
+                .sortedByDescending { it.score }
+            val first = ranked.firstOrNull()
+            // 次优 = 第二名的**不同候选字**（同名候选不会重复出现，天然不同）
+            val second = ranked.getOrNull(1)
+            Pick(
+                char = first?.char,
+                score = first?.score ?: 0f,
+                second = second?.score ?: -1f,
+                secondKnown = second != null,
+                ref = first?.ref ?: bestRef.name
+            )
         }
 
         val allScores = picks.values.map { it.score }
@@ -251,23 +287,40 @@ class FontDecoder(
         fun pct(p: Float): Float =
             if (sorted.isEmpty()) 0f
             else sorted[((sorted.size - 1) * p).toInt().coerceIn(0, sorted.size - 1)]
-        val gaps = picks.values.map { (it.score - it.second).coerceAtLeast(0f) }
-        val gapMedian = median(gaps)
-        val gapTight = gaps.count { it < 0.02f }
+        // 间距只统计「真的有两个候选可比」的字
+        val knownGaps = picks.values.filter { it.secondKnown }
+            .map { (it.score - it.second).coerceAtLeast(0f) }
+        val gapMedian = median(knownGaps)
+        val gapTight = knownGaps.count { it < 0.02f }
 
         // 自适应阈值：中位数减安全边际，但不超过固定阈值（固定阈值是兜底上限）
         val adaptive = (med - margin).coerceIn(0.5f, fixedThreshold)
         val effective = if (allScores.size < 3) fixedThreshold else adaptive
-
         winner = byRef.firstOrNull { it.name == bestRef.name } ?: bestRef
         threshold = effective
         preparedChars = picks.keys
         mapping.clear()
         var weak = 0
+        var uncertain = 0
         for ((ch, pick) in picks) {
-            val ok = !unreadable && pick.score >= effective && pick.char != null
+            // 「分数低」不等于「认错了」。
+            //
+            // 分数低有三种原因：①字体确实不是同一套；②这个字笔画太简单，任何字体都长得像；
+            // ③参考字体和卷面字体有细微渲染差异。只有 ①③ 且**又分不出第二名**时才该报错。
+            //
+            // 真机踩过：整卷平均 0.92（题目全对），但阈值 0.83 仍把 11 个字标成「存疑」，
+            // 用户看到「有 N 个字识别不确定」以为出错了，其实一个都没错。
+            // 所以加一条：**只要最优明显领先次优（gap ≥ [confidentGap]），就算分数低也照样采用**。
+            // 注意 secondKnown：没有次优可比时 gap 无意义，不能用它来「确认」。
+            val gap = if (pick.secondKnown) (pick.score - pick.second).coerceAtLeast(0f) else 0f
+            val clearWinner = pick.secondKnown &&
+                gap >= confidentGap && pick.score >= lowScoreFloor
+            val ok = !unreadable && pick.char != null && (pick.score >= effective || clearWinner)
             mapping[ch] = Hit(if (ok) normalize(pick.char!!) else null, pick.score)
-            if (!ok) weak++
+            when {
+                !ok -> weak++
+                pick.score < effective -> uncertain++   // 分数不高但有把握，只记账不报警
+            }
         }
 
         val perRefHits = picks.values.groupingBy { it.ref }.eachCount()
@@ -286,6 +339,8 @@ class FontDecoder(
             gapMedian = gapMedian,
             gapTight = gapTight,
             weak = weak,
+            uncertain = uncertain,
+            refMedians = refMedian.mapKeys { it.key.name },
             total = picks.size,
             threshold = effective,
             unreadable = unreadable
@@ -317,7 +372,7 @@ class FontDecoder(
             stats?.unreadable == true -> "这卷字体无法识别"
             else -> buildString {
                 append("有 ").append(weak.distinct().size).append(" 个字认不出来（")
-                append(weak.distinct().take(6).joinToString("")).append("），怕答错，先留着")
+                append(weak.distinct().take(6).joinToString("")).append("）")
             }
         }
         return Decoded(sb.toString(), weak, min, reason)
@@ -342,6 +397,24 @@ class FontDecoder(
         }
         if (bestChar == null || best < threshold) return Hit(null, best.coerceAtLeast(0f))
         return Hit(normalize(bestChar), best)
+    }
+
+    /**
+     * 文字识别是否算「合格」的唯一口径，UI 和日志都用它。
+     *
+     * 注意 [Stats.weak] 已经不再包含「分数偏低但明显领先次优」的字（那些字是真认得出来的），
+     * 所以展示时不要再用 mean/median 自己算一遍，直接看 weak。
+     */
+    /**
+     * 给日志用的字体质量摘要。
+     *
+     * **故意不提供「多少个字识别不出来」给 UI**：那个数字依赖相似度阈值，是统计量不是真值，
+     * 真机上出现过「题干全对、却报 9 个字不确定」。UI 不展示任何字体质量指标，
+     * 只有日志里 [Stats.report] 那一行是给排障用的。
+     */
+    fun confidenceText(): String {
+        val s = stats ?: return ""
+        return "字体统计：${s.total} 字，最低相似度 ${"%.2f".format(s.min)}"
     }
 
     companion object {

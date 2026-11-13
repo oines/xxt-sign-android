@@ -2,6 +2,7 @@ package com.xxt.sign.study
 
 import com.xxt.sign.net.CxSession
 import com.xxt.sign.core.LogStore
+import com.xxt.sign.core.Settings
 import com.xxt.sign.net.enc
 import com.xxt.sign.work.WorkJob
 import com.xxt.sign.net.get

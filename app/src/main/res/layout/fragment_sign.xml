@@ -26,6 +26,14 @@
                 android:text="@string/sign_all"
                 android:textSize="16sp" />
 
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btnPickAccounts"
+                style="@style/Widget.Material3.Button.OutlinedButton"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:text="选择账号（全部）" />
+
             <com.google.android.material.materialswitch.MaterialSwitch
                 android:id="@+id/swAuto"
                 android:layout_width="match_parent"

@@ -161,6 +161,7 @@ class StudyCourseAdapter(
                 append(" · ").append(label)
                 if (chapter.needUnlock) append(" · 需解锁")
                 if (chapter.jobCount > 0) append(" · 任务点 ").append(chapter.jobCount)
+
             }
 
             val cb = MaterialCheckBox(ctx).apply {

@@ -69,15 +69,17 @@ class StudyEngine(
         )
         if (targets.isEmpty()) return StudySummary(0, 0)
 
-        // 风控硬约束：视频必须一路一路播。
-        // 原来的 Semaphore(plan.concurrency) 是每次 run 新建的局部量，设置填 3 就是三路齐播；
-        // 现在章节级也是 1，视频真的开播还会再过 [VideoGate]（进程级互斥，重试也算）。
-        val semaphore = Semaphore(1)
-        if (plan.concurrency > 1) {
-            LogStore.add(
-                "[刷课] 并发设置是 ${plan.concurrency}，但视频播放固定为 1 路（风控），其余排队",
-                true
-            )
+        // 并发：按设置来（用户要求「设置填 4 就跑 4 路」）。
+        //
+        // 历史：这里曾经是 `Semaphore(plan.concurrency)`（每次 run 新建的局部量），
+        // 后来被 ebe0dac 改成固定 1 + 进程级 VideoGate，理由是「多路齐播会被风控抓」。
+        // 现在按用户要求恢复成真正的并发 —— 设置填几路就几路同时播。
+        // 并发上限在 Settings.quizConcurrency / studyConcurrency 里已经 coerce 过，
+        // 这里不再额外压到 1。
+        val concurrency = plan.concurrency.coerceAtLeast(1)
+        val semaphore = Semaphore(concurrency)
+        if (concurrency > 1) {
+            LogStore.add("[刷课] 并发 ${concurrency} 路同时刷", true)
         }
         coroutineScope {
             targets.map { (course, chapter) ->
@@ -196,18 +198,17 @@ class StudyEngine(
             onTask(base.copy(status = StudyTaskStatus.RUNNING, message = "准备中"))
 
             var lastProgress = 0
-            // 全局闸门：同一时刻只允许一路视频在播（含重试）
-            val result = VideoGate.run {
-                runVideo(course, job) { pct, msg ->
-                    lastProgress = pct
-                    onTask(
-                        base.copy(
-                            status = StudyTaskStatus.RUNNING,
-                            progress = pct,
-                            message = msg
-                        )
+            // 直接跑，不再过全局串行闸门（并发由上面的 Semaphore(concurrency) 控制）。
+            // VideoGate 保留但不用 —— 留着是为了以后想重新收紧时不用重写单测。
+            val result = runVideo(course, job) { pct, msg ->
+                lastProgress = pct
+                onTask(
+                    base.copy(
+                        status = StudyTaskStatus.RUNNING,
+                        progress = pct,
+                        message = msg
                     )
-                }
+                )
             }
 
             // 弹题统计要进任务卡片和日志：视频中途弹题 2 道，答上 1 道

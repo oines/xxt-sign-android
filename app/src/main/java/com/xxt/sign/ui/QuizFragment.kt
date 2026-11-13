@@ -1,11 +1,16 @@
 package com.xxt.sign.ui
 
+import android.Manifest
 import android.content.Intent
+import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
 import android.widget.Toast
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.ContextCompat
 import androidx.fragment.app.Fragment
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
@@ -25,6 +30,7 @@ import com.xxt.sign.study.StudyCheckStore
 import com.xxt.sign.study.StudyCourse
 import com.xxt.sign.study.StudyCourseStore
 import com.xxt.sign.work.QuizRunManager
+import com.xxt.sign.work.QuizService
 import com.xxt.sign.work.WorkQuestion
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -56,6 +62,17 @@ class QuizFragment : Fragment() {
     private var apiAccountId = ""
     private var api: StudyApi? = null
 
+    /** 已确认过的做题参数：拿到通知权限后真正开始时用（和刷课页同样的流程） */
+    private var pendingStart: (() -> Unit)? = null
+
+    private val notifPermLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) {
+        val action = pendingStart
+        pendingStart = null
+        action?.invoke()
+    }
+
     /** 用户勾了课程级复选框后，等章节检查完再自动回选 */
     private val selectAfterLoad = mutableSetOf<String>()
 
@@ -78,7 +95,7 @@ class QuizFragment : Fragment() {
 
         b.btnQuizFetch.setOnClickListener { fetchCourses() }
         b.btnQuizStart.setOnClickListener { startQuiz() }
-        b.btnQuizStop.setOnClickListener { QuizRunManager.stop("用户停止做题") }
+        b.btnQuizStop.setOnClickListener { stopQuiz() }
         b.btnQuizSettings.setOnClickListener { QuizSettingsDialog.show(this) }
         b.btnQuizSelectAll.setOnClickListener { selectAll(true) }
         b.btnQuizClear.setOnClickListener { selectAll(false) }
@@ -129,7 +146,10 @@ class QuizFragment : Fragment() {
             if (lastAccountId.isNotBlank()) {
                 lastAccountId = ""
                 resetApi()
-                if (QuizRunManager.isRunning()) QuizRunManager.stop("账号已切换，做题已停止")
+                if (QuizRunManager.isRunning()) {
+                    QuizRunManager.stop("账号已切换，做题已停止")
+                    QuizService.stop(requireContext())
+                }
             }
             if (items.isNotEmpty()) {
                 items.clear()
@@ -147,7 +167,10 @@ class QuizFragment : Fragment() {
         if (lastAccountId != selected.id) {
             lastAccountId = selected.id
             resetApi()
-            if (QuizRunManager.isRunning()) QuizRunManager.stop("账号已切换，做题已停止")
+            if (QuizRunManager.isRunning()) {
+                QuizRunManager.stop("账号已切换，做题已停止")
+                QuizService.stop(requireContext())
+            }
             restoreCachedCourses(selected, keepSelection = false)
         } else if (items.isEmpty()) {
             restoreCachedCourses(selected)
@@ -536,7 +559,31 @@ class QuizFragment : Fragment() {
         }
         val courses = chosen.map { it.course }
         val selection = chosen.associate { it.course.key to it.selectedChapters }
-        QuizRunManager.start(account.id, courses, selection)
+
+        // 和刷课页一致：先确保通知权限（Android 13+），再启动前台服务。
+        // 顺序很重要：先让 QuizRunManager 进入 running，服务里的 state 观察者
+        // 才不会在启动瞬间看到 running=false 而立刻 stopSelf。
+        val appCtx = requireContext().applicationContext
+        val begin = {
+            QuizRunManager.start(account.id, courses, selection)
+            QuizService.start(appCtx)
+        }
+        if (Build.VERSION.SDK_INT >= 33 &&
+            ContextCompat.checkSelfPermission(
+                requireContext(),
+                Manifest.permission.POST_NOTIFICATIONS
+            ) != PackageManager.PERMISSION_GRANTED
+        ) {
+            pendingStart = begin
+            notifPermLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+        } else {
+            begin()
+        }
+    }
+
+    private fun stopQuiz() {
+        QuizRunManager.stop("用户停止做题")
+        QuizService.stop(requireContext())
     }
 
     private fun render(state: QuizRunManager.State) {
@@ -634,20 +681,34 @@ class QuizFragment : Fragment() {
     /** 只渲染一行入口；具体内容在 [QuizDetailActivity]，避免挤压下面的课程/章节列表 */
     private fun renderDetail(state: QuizRunManager.State) {
         if (_b == null) return
-        val detail = state.detail
-        if (!state.running || detail == null) {
+        val detail = state.detail ?: state.questions.lastOrNull()
+        // 结束后也保留入口：和刷课页一样，可以点进去回看本次做过的题。
+        if (detail == null) {
             b.cardQuizDetail.visibility = View.GONE
             return
         }
         b.cardQuizDetail.visibility = View.VISIBLE
-        b.tvQuizDetailTitle.text = buildString {
-            if (detail.chapterTitle.isNotBlank()) append(detail.chapterTitle).append(" · ")
-            append("第 ").append(detail.index).append("/").append(detail.total).append(" 题 · ")
-            append(WorkQuestion.typeName(detail.type))
+        b.tvQuizDetailTitle.text = if (state.running) {
+            buildString {
+                if (detail.chapterTitle.isNotBlank()) append(detail.chapterTitle).append(" · ")
+                append("第 ").append(detail.index).append("/").append(detail.total).append(" 题 · ")
+                append(WorkQuestion.typeName(detail.type))
+            }
+        } else {
+            "做题已结束 · 查看详情"
         }
-        b.tvQuizDetailStem.text = detail.stem.ifBlank { "（题干为空）" }
-        val label = state.waitLabel.ifBlank { "等待" }
-        b.tvQuizDetailWait.text = if (state.waitSeconds > 0) "$label ${state.waitSeconds}s" else ""
+        val stem = detail.correctedStem.ifBlank { detail.stem }
+        b.tvQuizDetailStem.text = when {
+            stem.isNotBlank() -> stem
+            state.finished -> "本次做题已完成"
+            else -> "（题干为空）"
+        }
+        b.tvQuizDetailWait.text = if (state.running) {
+            val label = state.waitLabel.ifBlank { "等待" }
+            if (state.waitSeconds > 0) "$label ${state.waitSeconds}s" else ""
+        } else {
+            state.status
+        }
     }
 
     private fun toast(msg: String) {

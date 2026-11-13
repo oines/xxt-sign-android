@@ -3,6 +3,7 @@ package com.xxt.sign.work
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
+import org.jsoup.nodes.TextNode
 
 /**
  * 章节测验页面解析。
@@ -60,26 +61,109 @@ object WorkParser {
     }
 
     private fun parseQuestion(block: Element): WorkQuestion? {
-        val qid = block.id().removePrefix("question").takeIf { it.isNotBlank() } ?: return null
+        // 新版页面有时没有 id="question<qid>"，qid 在 singleQuesId 的 data 属性上。
+        val qid = block.id().removePrefix("question").takeIf { it.isNotBlank() }
+            ?: block.attr("data").trim().takeIf { it.isNotBlank() }
+            ?: return null
 
         val type = block.selectFirst("input#answertype$qid")?.attr("value")?.toIntOrNull()
             ?: block.selectFirst("input[name=answertype$qid]")?.attr("value")?.toIntOrNull()
+            // 旧版题型在 div.TiMu 的 data 上（0 单选 / 1 多选 / 2 填空 / 3 判断 / 4 简答）
+            ?: block.select("div.TiMu[data]").firstOrNull { it !== block }?.attr("data")?.toIntOrNull()
             ?: WorkQuestion.TYPE_SINGLE
 
         // 单选/判断用 num_option，多选用 num_option_dx；同一份卷子里两种都有
-        val spans = (block.select("span.num_option") + block.select("span.num_option_dx")).distinct()
-        val options = spans.mapNotNull { span ->
-            val key = span.attr("data").split('|').firstOrNull()?.trim().orEmpty()
-            if (key.isBlank()) return@mapNotNull null
-            WorkOption(key = key, text = span.text().trim())
-        }.distinctBy { it.key }
+        val options = parseOptions(block)
 
-        // 题干：复制一份，把选项/表单控件全部剔掉再取文本，避免把选项拼进题干
+        // 题干：复制一份，把选项行/表单控件全部剔掉再取文本，避免把选项拼进题干。
+        // 注意选项正文有时不在 span 里，而在同一 <li> 内，所以要先删整行，不能只删 span。
         val clone = block.clone()
-        clone.select("span.num_option, span.num_option_dx, input, textarea, select, script, style").remove()
+        removeOptionMarkup(clone)
+        clone.select("input, textarea, select, script, style").remove()
         val stem = clone.text().trim()
 
         return WorkQuestion(qid = qid, type = type, stem = stem, options = options)
+    }
+
+    private fun parseOptions(block: Element): List<WorkOption> {
+        val spans = (block.select("span.num_option") + block.select("span.num_option_dx")).distinct()
+        return spans.mapNotNull { span ->
+            val key = span.attr("data").split('|').firstOrNull()?.trim().orEmpty()
+            if (key.isBlank()) return@mapNotNull null
+            WorkOption(key = key, text = optionText(span, key))
+        }.distinctBy { it.key }
+    }
+
+    /**
+     * 选项正文可能在：
+     *  - li / span 的 aria-label（超星部分页面选项文字只放在无障碍属性里，span 本身为空）
+     *  - 父级 li 内（`<li><span>A</span><div>甲</div></li>`）
+     *  - span 后的文本节点 / 后续兄弟节点
+     *  - span 自身文本
+     */
+    private fun optionText(span: Element, key: String): String {
+        val parent = span.parent()
+        val row = span.parents().firstOrNull { it.tagName() == "li" } ?: parent
+
+        // 1. aria-label 优先级最高：真机上出现过 span 只有字母、正文只在 aria-label 里的页面
+        val aria = sequenceOf(span, row, parent)
+            .filterNotNull()
+            .map { it.attr("aria-label").trim() }
+            .firstOrNull { it.isNotBlank() }
+        if (aria != null) {
+            val cleaned = cleanOptionText(aria, key)
+            if (cleaned.isNotBlank()) return cleaned
+        }
+
+        // 2. 整行（li）取文本，去掉选项字母 span 后剩下的就是正文
+        if (row != null && row.tagName() == "li") {
+            val rowText = row.clone()
+                .also { it.select("span.num_option, span.num_option_dx").remove() }
+                .text()
+                .trim()
+            if (rowText.isNotBlank()) return cleanOptionText(rowText, key)
+        }
+
+        // 3. 也可能是 span 后直接跟文本节点：<div class="options"><span>A</span>甲<span>B</span>乙</div>
+        //    必须先看紧接着的文本节点，否则 nextElementSibling 会拿到下一个选项的 span。
+        val nextNode = span.nextSibling()
+        if (nextNode is TextNode && nextNode.text().isNotBlank()) {
+            return cleanOptionText(nextNode.text(), key)
+        }
+        var sibling = span.nextElementSibling()
+        while (sibling != null) {
+            val text = sibling.text().trim()
+            if (text.isNotBlank()) return cleanOptionText(text, key)
+            sibling = sibling.nextElementSibling()
+        }
+        val own = span.text().trim()
+        if (own.isNotBlank()) return cleanOptionText(own, key).ifBlank { own }
+        return cleanOptionText(parent?.text()?.trim().orEmpty(), key)
+    }
+
+    /** aria-label 常带 "A. 选项正文" 前缀，去掉字母壳和后缀的「选择」 */
+    private fun cleanOptionText(raw: String, key: String): String {
+        var text = raw.replace(Regex("\\s+"), " ").trim()
+        if (key.isNotBlank()) {
+            val prefixes = listOf("$key.", "$key．", "$key、", "$key)", "$key）", "$key ")
+            prefixes.firstOrNull { text.startsWith(it, ignoreCase = true) }?.let {
+                text = text.substring(it.length).trim()
+            }
+        }
+        if (text.endsWith("选择")) text = text.dropLast(2).trim()
+        return text
+    }
+
+    /** 删掉选项所在的整行（li / 带 option 类名的块），避免选项正文残留在题干 */
+    private fun removeOptionMarkup(root: Element) {
+        val rows = mutableListOf<Element>()
+        rows += root.select("li").filter { it.selectFirst("span.num_option, span.num_option_dx") != null }
+        rows += root.select("div, p, section").filter { el ->
+            el.className().lowercase().contains("option") &&
+                el.selectFirst("span.num_option, span.num_option_dx") != null
+        }
+        rows.forEach { it.remove() }
+        root.select("span.num_option, span.num_option_dx").remove()
     }
 
     /** 提交用的 form（新版 mooc2 是 `#form1`，老版是 `#submitForm`） */

@@ -82,7 +82,14 @@ fun enc(s: String): String = URLEncoder.encode(s, "UTF-8")
 
 fun dec(s: String): String = runCatching { URLDecoder.decode(s, "UTF-8") }.getOrDefault(s)
 
-data class Resp(val code: Int, val body: String, val headers: Headers, val rawBytes: ByteArray = ByteArray(0)) {
+data class Resp(
+    val code: Int,
+    val body: String,
+    val headers: Headers,
+    val rawBytes: ByteArray = ByteArray(0),
+    /** 跟随重定向后的最终 URL（排错用） */
+    val finalUrl: String = ""
+) {
     val ok: Boolean get() = code in 200..399
 
     // ByteArray 参与 equals 会让 data class 语义变味，这里按引用比较
@@ -92,7 +99,7 @@ data class Resp(val code: Int, val body: String, val headers: Headers, val rawBy
 
 fun OkHttpClient.exec(req: Request): Resp = newCall(req).execute().use { r ->
     val bytes = r.body?.bytes() ?: ByteArray(0)
-    Resp(r.code, String(bytes, Charsets.UTF_8), r.headers, bytes)
+    Resp(r.code, String(bytes, Charsets.UTF_8), r.headers, bytes, r.request.url.toString())
 }
 
 fun OkHttpClient.get(url: String, headers: Map<String, String> = emptyMap()): Resp {

@@ -217,7 +217,6 @@ object CourseAuditCalculator {
             checked++
             taskPoints += check.allTasks
             donePoints += check.allDone
-            // 逐章状态按任务点算（icon_yiwanc 只会在全完成时亮，不能拿来当唯一依据）
             val state = when {
                 check.allTasks > 0 && check.allComplete -> ChapterRow.State.DONE
                 check.allDone > 0 -> ChapterRow.State.PARTIAL
