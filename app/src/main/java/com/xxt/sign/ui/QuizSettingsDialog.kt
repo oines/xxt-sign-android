@@ -10,6 +10,7 @@ import android.text.style.UnderlineSpan
 import android.view.View
 import android.widget.TextView
 import androidx.fragment.app.Fragment
+import androidx.core.widget.doAfterTextChanged
 import androidx.lifecycle.lifecycleScope
 import com.google.android.material.textfield.MaterialAutoCompleteTextView
 import com.xxt.sign.core.Settings
@@ -25,13 +26,19 @@ object QuizSettingsDialog {
 
     private data class ProviderOption(val label: String, val value: String, val bank: Boolean)
 
+    /**
+     * 答案来源选项。
+     *
+     * **没有「纯大模型」这个选项** —— 它和「不查题库」的行为完全一样：
+     * [AnswerProvider.mode] 里 `off` 在大模型可用时就是 `LLM_ONLY`，
+     * `llm` 在大模型不可用时也会退化成 `OFF`。两个选项等价，留着只会让人选错。
+     */
     private val providerOptions = listOf(
-        ProviderOption("不查题库（只走大模型，大模型关则留空）", "off", false),
+        ProviderOption("不查题库（走「用大模型做题」，未开启则留空）", "off", false),
         ProviderOption("内置免费题库（免配置）", "auto", true),
         ProviderOption("言溪题库", "yanxi", true),
         ProviderOption("柠檬题库", "lemon", true),
-        ProviderOption("tikuAdapter（自建）", "tikuadapter", true),
-        ProviderOption("纯大模型（不查题库）", "llm", false)
+        ProviderOption("tikuAdapter（自建）", "tikuadapter", true)
     )
 
     private val effortOptions = listOf(
@@ -49,14 +56,33 @@ object QuizSettingsDialog {
     fun show(fragment: Fragment) {
         val ctx = fragment.requireContext()
         val v = DialogQuizSettingsBinding.inflate(fragment.layoutInflater)
-        var chosen = providerOptions.firstOrNull { it.value == Settings.quizProvider } ?: providerOptions[1]
+        // 历史配置里可能是 "llm"（已删掉的「纯大模型」选项），统一映射到 off
+        val stored = Settings.quizProvider.trim().lowercase()
+        var chosen = providerOptions.firstOrNull { it.value == stored }
+            ?: providerOptions.firstOrNull { it.value == "auto" }
+            ?: providerOptions[0]
 
         val dropdown = v.etProvider as MaterialAutoCompleteTextView
         dropdown.setSimpleItems(providerOptions.map { it.label }.toTypedArray())
         dropdown.setText(chosen.label, false)
 
+        /**
+         * 「不查题库」+ 大模型没开 = 所有题都会留空。
+         * 当场用红字提醒，别等做完一整卷才发现全是空的。
+         */
+        fun updateWarn() {
+            val noBank = !chosen.bank
+            val llmOn = v.swLlm.isChecked && v.etLlmKey.text?.toString()?.trim().orEmpty().isNotEmpty()
+            val bad = noBank && !llmOn
+            v.tvProviderWarn.visibility = if (bad) View.VISIBLE else View.GONE
+            v.tvProviderWarn.text =
+                "⚠ 已选「不查题库」，但大模型没开或没填 Key —— 这样所有题都会留空。" +
+                    "请在上面打开「用大模型做题」并填写 Key，或改选一个题库。"
+        }
+
         fun syncBankFields() {
             v.bankFields.visibility = if (chosen.bank) View.VISIBLE else View.GONE
+            updateWarn()
         }
         dropdown.setOnItemClickListener { _, _, position, _ ->
             chosen = providerOptions.getOrElse(position) { providerOptions[1] }
@@ -80,6 +106,11 @@ object QuizSettingsDialog {
         v.etLlmKey.setText(Settings.quizLlmKey)
         v.etLlmBaseUrl.setText(Settings.quizLlmBaseUrl)
         v.etLlmModel.setText(Settings.quizLlmModel)
+
+        // 大模型开关 / Key 变化后重新评估「选了不查题库但大模型没开」的警告
+        v.swLlm.setOnCheckedChangeListener { _, _ -> updateWarn() }
+        v.etLlmKey.doAfterTextChanged { updateWarn() }
+        updateWarn()
 
         val effortDropdown = v.etLlmEffort as MaterialAutoCompleteTextView
         var chosenEffort = effortOptions.firstOrNull { it.second == Settings.quizLlmEffort } ?: effortOptions.first()

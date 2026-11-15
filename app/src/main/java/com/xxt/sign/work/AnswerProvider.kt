@@ -40,7 +40,10 @@ class AnswerProvider(
             // off/none/留空 = 不查题库；但如果大模型可用，仍然只走大模型。
             // 真正「什么都不查」只有把大模型也关掉。
             "", "off", "none", "disable" -> if (llmReady) Mode.LLM_ONLY else Mode.OFF
-            "llm", "off+llm" -> Mode.LLM_ONLY
+            // 历史配置里可能还留着 "llm"（UI 上那个「纯大模型」选项已删除）。
+            // 必须和 off 走同一套判断：否则大模型没配 key 时会得到
+            // mode=LLM_ONLY 但 configured=false 的矛盾状态。
+            "llm", "off+llm" -> if (llmReady) Mode.LLM_ONLY else Mode.OFF
             else -> Mode.BANK_FIRST
         }
 

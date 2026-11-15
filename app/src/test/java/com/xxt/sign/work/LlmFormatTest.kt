@@ -203,8 +203,11 @@ class LlmFormatTest {
         assertEquals(AnswerProvider.Mode.BANK_FIRST, mode("auto"))
         assertEquals(AnswerProvider.Mode.BANK_FIRST, mode("yanxi"))
         assertEquals(AnswerProvider.Mode.BANK_FIRST, mode("tikuadapter"))
-        assertEquals(AnswerProvider.Mode.LLM_ONLY, mode("llm"))
-        assertEquals(AnswerProvider.Mode.LLM_ONLY, mode("off+llm"))
+        // 没配大模型时，这些「只走大模型」的值都退化成 OFF。
+        // 以前 "llm" 硬编码返回 LLM_ONLY，会得到 mode=LLM_ONLY 但 configured=false
+        // 的矛盾状态；「纯大模型」选项已从 UI 删除，这里保持与 off 一致。
+        assertEquals(AnswerProvider.Mode.OFF, mode("llm"))
+        assertEquals(AnswerProvider.Mode.OFF, mode("off+llm"))
         assertEquals(AnswerProvider.Mode.OFF, mode("off"))
         assertEquals(AnswerProvider.Mode.OFF, mode(""))
     }

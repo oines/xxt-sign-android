@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
+    xmlns:tools="http://schemas.android.com/tools"
     android:layout_width="match_parent"
     android:layout_height="wrap_content">
 
@@ -39,9 +40,20 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="2dp"
-            android:text="题库优先的选项，没查到才会去问大模型；选「不查题库」就只暂存。"
+            android:text="题库优先的选项，没查到才会去问大模型；选「不查题库」就只走「用大模型做题」开关。"
             android:textColor="@color/muted"
             android:textSize="12sp" />
+
+        <!-- 选了「不查题库」但大模型没开时的红字警告，默认隐藏 -->
+        <TextView
+            android:id="@+id/tvProviderWarn"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:textColor="@color/err"
+            android:textSize="12sp"
+            android:visibility="gone"
+            tools:text="⚠ 已选「不查题库」，但大模型没开或没填 Key" />
 
         <!-- 题库相关输入项：选到题库模式才显示 -->
         <LinearLayout
