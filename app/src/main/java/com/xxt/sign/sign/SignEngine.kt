@@ -91,6 +91,14 @@ object SignEngine {
     /**
      * 找出某个账号所有进行中的签到 / 签退活动。
      * 关键：`activeType` 既可能是 2（签到）也可能是 74（签退），两者都要收。
+     *
+     * ## 为什么这里要开两级并发（扫码签到只有 10 秒窗口）
+     *
+     * 原实现是「课程并发 4 + 每个活动**串行** `signDetail`」。一门课的活动列表里
+     * 常常有十几个历史活动（随堂练习/抢答/旧签到），虽然会按 `status` 过滤，
+     * 但**过滤前要先逐个拉详情**，一次 300–600ms，串行下来很容易吃掉 5–10 秒。
+     *
+     * 现在：课程级并发 8、课程内活动详情并发 6。总请求数没变，只是不再排队等。
      */
     suspend fun findAllActive(api: CxApi, filter: Set<String> = emptySet()): List<ActiveActivity> {
         val courses = resolveCourses(api, filter)
@@ -100,29 +108,34 @@ object SignEngine {
         // 两个协程同时进来时会把同一个活动收两遍，最后同一个活动签两次。
         val lock = Mutex()
         val found = LinkedHashMap<String, ActiveActivity>()
-        val sem = Semaphore(4)
+        val courseSem = Semaphore(8)
         coroutineScope {
             courses.map { course ->
                 async(Dispatchers.IO) {
-                    // 错峰启动：不要正好 4 个一批地发出去
                     com.xxt.sign.core.Jitter.staggerStart()
-                    sem.withPermit {
-                        runCatching {
-                            val list = api.activeList(course.courseId, course.classId)
-                            for (act in list) {
-                                val aid = act.optString("id")
-                                if (aid.isBlank()) continue
-                                val seen = lock.withLock { found.containsKey(aid) }
-                                if (seen) continue
-                                val detail = api.signDetail(aid)
-                                if (detail.optInt("status", 1) == 2) continue // 已结束
-                                lock.withLock {
-                                    if (!found.containsKey(aid)) {
-                                        found[aid] = ActiveActivity(detail, course, act)
+                    courseSem.withPermit {
+                        val list = runCatching { api.activeList(course.courseId, course.classId) }
+                            .getOrDefault(emptyList())
+                        // 课程内：先按 aid 去重，再并发拉详情
+                        val aids = list.mapNotNull { it.optString("id").takeIf { id -> id.isNotBlank() } }
+                            .distinct()
+                        val detailSem = Semaphore(6)
+                        aids.map { aid ->
+                            async(Dispatchers.IO) {
+                                if (lock.withLock { found.containsKey(aid) }) return@async
+                                detailSem.withPermit {
+                                    val detail = runCatching { api.signDetail(aid) }.getOrNull()
+                                        ?: return@withPermit
+                                    if (detail.optInt("status", 1) == 2) return@withPermit // 已结束
+                                    val act = list.firstOrNull { it.optString("id") == aid } ?: JSONObject()
+                                    lock.withLock {
+                                        if (!found.containsKey(aid)) {
+                                            found[aid] = ActiveActivity(detail, course, act)
+                                        }
                                     }
                                 }
                             }
-                        }
+                        }.awaitAll()
                     }
                 }
             }.awaitAll()

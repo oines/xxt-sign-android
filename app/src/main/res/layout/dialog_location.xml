@@ -1,9 +1,34 @@
 <?xml version="1.0" encoding="utf-8"?>
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools"
     android:layout_width="match_parent"
     android:layout_height="wrap_content"
     android:orientation="vertical"
     android:padding="20dp">
+
+    <com.google.android.material.materialswitch.MaterialSwitch
+        android:id="@+id/swUseCurrent"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="使用当前位置"
+        android:textSize="15sp" />
+
+    <TextView
+        android:id="@+id/tvUseCurrentDesc"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="4dp"
+        android:lineSpacingExtra="2dp"
+        android:textSize="12sp"
+        tools:text="签到时自动从系统 GPS 取位置，并统一换算成学习通口径（GCJ-02）。"
+        tools:visibility="visible" />
+
+    <View
+        android:layout_width="match_parent"
+        android:layout_height="1dp"
+        android:layout_marginTop="12dp"
+        android:layout_marginBottom="4dp"
+        android:background="#22000000" />
 
     <com.google.android.material.textfield.TextInputLayout
         android:layout_width="match_parent"
@@ -52,4 +77,26 @@
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:text="用当前定位填充" />
+
+    <!-- 手动坐标的坐标系类型：「我填的这串数字是什么坐标系」 -->
+    <com.google.android.material.button.MaterialButton
+        android:id="@+id/btnCoordSource"
+        style="@style/Widget.Material3.Button.OutlinedButton"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="4dp"
+        android:text="我填的坐标是：不转换（原样提交）" />
+
+    <!-- 坐标系对照：输入坐标后实时显示各选项下「实际会提交什么」，
+         让用户拿地图一对就能确定该选哪个。默认隐藏，有坐标才显示。 -->
+    <TextView
+        android:id="@+id/tvCoordHint"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="4dp"
+        android:lineSpacingExtra="2dp"
+        android:textSize="12sp"
+        android:visibility="gone"
+        tools:text="原始 31.889088, 118.902002\n· 不转换/GCJ-02 → 31.889088, 118.902002\n· WGS-84 → 31.886906, 118.907009（偏 531 米）"
+        tools:visibility="visible" />
 </LinearLayout>

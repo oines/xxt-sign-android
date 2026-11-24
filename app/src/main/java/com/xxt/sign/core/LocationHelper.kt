@@ -49,16 +49,22 @@ object LocationHelper {
     /** 精度差到这个程度就当它是粗略定位，要提醒用户（米） */
     const val COARSE_ACCURACY_M = 200f
 
-    /** 定位来源策略 */
-    enum class SourceMode {
-        /** 只用 GPS；拿不到才降级到其它 provider 并标注 */
-        GPS_ONLY,
-
-        /** 所有 provider 并发，取精度最好的 */
-        AUTO
-    }
-
-    data class Fix(val location: Location, val provider: String, val fromCache: Boolean) {
+    data class Fix(
+        val location: Location,
+        val provider: String,
+        val fromCache: Boolean,
+        /**
+         * 这个坐标是不是**已经是 GCJ-02（火星坐标）**。
+         *
+         * 国产 ROM 的 `fused` / `network` provider 有的会替应用做一次纠偏；
+         * 真 `gps` provider 给的是 WGS-84。判错了就会双重偏移：
+         * 一次约 531 米、**两次约 1063 米** —— 真机报过「实际差 100 米，
+         * 学习通却提示超出 1015 米」，就是这里多转了一次。
+         *
+         * 由 [detectLooksGcj] 用「GPS 与其它 provider 的间距」反推。
+         */
+        val looksGcj: Boolean = false
+    ) {
         val accuracy: Int get() = location.accuracy.toInt()
 
         /** 是否属于粗略定位（WiFi/基站） */
@@ -128,17 +134,26 @@ object LocationHelper {
      * [useCache] = false 时**不秒回**、也不回退到「很旧的」系统缓存；
      * 但 2 分钟内刚到过的那份仍会当候选（地图 App 也是这么用的，模拟定位往往就走这条）。
      */
+    /**
+     * 取一次当前位置。**一律以 GPS 为准**（[Settings.useCurrentLocation] 打开时签到时调用）。
+     *
+     * 流程：先只订阅 `gps`，够准就立刻返回；室内拿不到再降级订阅其它 provider 兜底
+     * （但会标记 provider 和精度，日志里能看出来）。拿到的坐标恒为 **WGS-84**，
+     * 提交前由 [GeoCoord.gcjToWgs] 的反向逻辑统一转成 GCJ-02。
+     *
+     * [useCache] = false 时**不秒回**、也不回退到「很旧的」系统缓存；
+     * 但 2 分钟内刚到过的那份仍会当候选（地图 App 也是这么用的，模拟定位往往就走这条）。
+     */
     @SuppressLint("MissingPermission")
     suspend fun current(
         ctx: Context,
         timeoutMs: Long = 12_000L,
-        mode: SourceMode = SourceMode.GPS_ONLY,
         acceptCachedImmediately: Boolean = true,
         useCache: Boolean = true
     ): Fix? = coroutineScope {
         val lm = manager(ctx) ?: return@coroutineScope null
         val enabled = enabledProviders(lm)
-        LogStore.add("[定位] 策略=$mode 可用 provider: ${enabled.joinToString()}", true)
+        LogStore.add("[定位] 可用 provider: ${enabled.joinToString()}", true)
         if (enabled.isEmpty()) return@coroutineScope null
 
         // 1) 各 provider 的「上次位置」：地图 App 打开时先秒回这份，这里只做候选 + 日志
@@ -161,7 +176,7 @@ object LocationHelper {
         )
         if (useCache && acceptCachedImmediately && cached != null &&
             cached.ageMs < GOOD_ENOUGH_MS && !cached.coarse &&
-            (mode == SourceMode.AUTO || cached.provider == LocationManager.GPS_PROVIDER)
+            cached.provider == LocationManager.GPS_PROVIDER
         ) {
             return@coroutineScope cached
         }
@@ -216,8 +231,8 @@ object LocationHelper {
         }
 
         try {
-            // GPS_ONLY：先只订阅 GPS（地图 App 也是先要高精度），室内拿不到再降级
-            if (mode == SourceMode.GPS_ONLY && enabled.contains(LocationManager.GPS_PROVIDER)) {
+            // 先只订阅 GPS（地图 App 也是先要高精度），室内拿不到再降级
+            if (enabled.contains(LocationManager.GPS_PROVIDER)) {
                 start(listOf(LocationManager.GPS_PROVIDER))
                 awaitFix(startedAt + timeoutMs * 3 / 5)
                 stop()
@@ -235,9 +250,7 @@ object LocationHelper {
                 }
             }
 
-            val pool = if (mode == SourceMode.GPS_ONLY) {
-                enabled.filter { it != LocationManager.GPS_PROVIDER }
-            } else enabled
+            val pool = enabled.filter { it != LocationManager.GPS_PROVIDER }
             if (pool.isNotEmpty()) {
                 start(pool)
                 awaitFix(startedAt + timeoutMs)
@@ -250,8 +263,8 @@ object LocationHelper {
         val realtime = fixes.filter { !it.fromCache }
         val gpsRealtime = realtime.filter { it.provider == LocationManager.GPS_PROVIDER }
             .minByOrNull { it.accuracy }
-        var result = if (mode == SourceMode.GPS_ONLY && gpsRealtime != null && !gpsRealtime.coarse) {
-            // 仅 GPS 模式：GPS 不粗就认 GPS
+        var result = if (gpsRealtime != null && !gpsRealtime.coarse) {
+            // GPS 不粗就认 GPS
             gpsRealtime
         } else {
             realtime.minByOrNull { it.accuracy }
@@ -270,17 +283,63 @@ object LocationHelper {
             result = fallback
         }
 
+        // 反推坐标系（只能算一次，放这里统一做）
+        result = result?.let { r ->
+            val gcj = detectLooksGcj(fixes + lastKnown, r)
+            if (gcj != null && gcj != r.looksGcj) r.copy(looksGcj = gcj) else r
+        }
+
         LogStore.add(
             "[定位] 最终：" + (
                 result?.let {
                     "${it.provider} ${describe(it.location)} ${it.ageText}" +
                         (if (it.fromCache) "（上次位置）" else "") +
-                        (if (it.coarse) "（粗略定位！）" else "")
+                        (if (it.coarse) "（粗略定位！）" else "") +
+                        (if (it.looksGcj) "（疑似已是地图坐标）" else "")
                 } ?: "无可用定位"
                 ),
             result != null
         )
         result
+    }
+
+    /**
+     * 反推「这个坐标看起来是不是 GCJ-02」，**仅用于日志提示，不参与任何换算决策**。
+     *
+     * 换算已经完全交给用户在设置里选的坐标系（[Settings.coordSource]），默认不转。
+     * 这里提供这条日志，是为了让排查时能一眼看出「本机 fused 和 gps 是不是同一套坐标系」。
+     *
+     * 依据：真 GPS 给 WGS-84；若同一物理位置的 `fused`/`network` 与它相差约 531 米，
+     * 说明那个 provider 给的已经是 GCJ-02。
+     */
+    private fun detectLooksGcj(all: List<Fix>, chosen: Fix): Boolean? {
+        if (isMock(chosen.location)) return false
+        if (chosen.provider == LocationManager.GPS_PROVIDER) return false
+        val gps = all.firstOrNull {
+            it.provider == LocationManager.GPS_PROVIDER && !isMock(it.location) && !it.coarse
+        } ?: return null
+        val d = GeoCoord.distanceMeters(
+            gps.location.latitude, gps.location.longitude,
+            chosen.location.latitude, chosen.location.longitude
+        )
+        LogStore.add(
+            String.format(
+                Locale.US,
+                "[定位] 参考：%s 与 gps 相距 %.0f 米 → %s",
+                chosen.provider, d,
+                when {
+                    d in 300.0..800.0 -> "该 provider 给的应已是 GCJ-02（差一次偏移量）"
+                    d < 150.0 -> "两者同坐标系（应为 WGS-84）"
+                    else -> "间距异常，判不出坐标系"
+                }
+            ),
+            true
+        )
+        return when {
+            d in 300.0..800.0 -> true
+            d < 150.0 -> false
+            else -> null
+        }
     }
 
     private fun describe(l: Location): String =

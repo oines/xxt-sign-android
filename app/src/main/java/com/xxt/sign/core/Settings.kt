@@ -11,6 +11,18 @@ object Settings {
     const val QUIZ_YANXI = "yanxi"
     const val QUIZ_LEMON = "lemon"
 
+    /** 坐标原样提交，不做任何换算（默认） */
+    const val COORD_NONE = "none"
+
+    /** 输入坐标是 WGS-84（GPS 原始）→ 提交换算成 GCJ-02 */
+    const val COORD_WGS84 = "wgs84"
+
+    /** 输入坐标已经是 GCJ-02（高德/腾讯/学习通口径）→ 原样提交 */
+    const val COORD_GCJ02 = "gcj02"
+
+    /** 输入坐标是 BD-09（百度）→ 提交换算成 GCJ-02 */
+    const val COORD_BD09 = "bd09"
+
     private lateinit var sp: SharedPreferences
 
     fun init(c: Context) {
@@ -75,50 +87,67 @@ object Settings {
         get() = sp.getInt("interval", 5).coerceIn(1, 600)
         set(v) = sp.edit().putInt("interval", v.coerceIn(1, 600)).apply()
 
-    /** 定位来源：true = 只用 GPS（准，但室内可能拿不到）；false = 所有 provider 取最准的 */
-    var gpsOnly: Boolean
-        get() = sp.getBoolean("gpsOnly", true)
-        set(v) = sp.edit().putBoolean("gpsOnly", v).apply()
-
     /**
-     * 坐标纠偏：WGS-84 → GCJ-02。**默认开启，这是正确行为。**
+     * 签到时是否**自动使用系统 GPS 当前位置**。
      *
-     * ## 为什么必须开（真机实测数据）
+     * - `true`：签到时现场从系统 GPS 取一次坐标，**原样提交，不做任何换算**。
+     *   完全忽略手动输入框和 [coordSource]。
+     * - `false`：用用户填在「位置坐标」里的值，并按 [coordSource] 解释那个值是哪种坐标系。
      *
-     * 虚拟定位 App（高德/腾讯底图）显示的是 **GCJ-02**，注入系统时它会自动换算成
-     * **WGS-84**（GPS 原始数据本该如此）。App 从 `LocationManager` 读到的是 WGS-84。
-     * 学习通按 GCJ-02 校验距离，所以必须转回来：
+     * ## 为什么自动模式不做换算（真机实测）
+     *
+     * 曾在这里无条件做一次 WGS→GCJ（理由是「系统 GPS 恒为 WGS」）。但实测推翻了它：
      *
      * ```
-     * 模拟器显示（GCJ-02）   31.889087, 118.902128
-     * App 读到的系统原始     31.891269, 118.897120   ← WGS-84
-     * 做一次 WGS→GCJ         31.889087, 118.902128   ← 与模拟器完全一致
+     * 系统 GPS 原始(WGS)  31.891270, 118.896994   离教室 652 米
+     * 转一次后(GCJ)       31.889088, 118.902002   离教室 131 米   ← 数值上更近
      * ```
      *
-     * 不转的话，提交点和教师标注点会差 531 米，签到报「不在可签到范围内」。
-     *
-     * ## 什么时候该关
-     *
-     * 极少数情况：系统/模拟器直接注入的就是 GCJ-02（不做换算），此时再转会偏。
-     * 判断方法：把开关关掉，如果 App 显示的值和地图上选的点一致，就说明不转是对的。
-     *
-     * 只在「用当前定位填充」时生效；手动粘贴的坐标不会被转（粘贴的通常是地图坐标）。
+     * 但提交这个更近的 GCJ 值，学习通反而报**超出范围**；改成原样提交后立刻签到成功。
+     * 说明**服务端自己会把收到的坐标转一次**，我们再转就是双重偏移。
      */
-    var coordShift: Boolean
-        get() = sp.getBoolean("coordShift", true)
-        set(v) = sp.edit().putBoolean("coordShift", v).apply()
+    var useCurrentLocation: Boolean
+        get() = sp.getBoolean("useCurrentLocation", true)
+        set(v) = sp.edit().putBoolean("useCurrentLocation", v).apply()
 
     /**
-     * 一次性把 `coordShift` 复位成「开」。
+     * **手动输入**坐标所用的坐标系 —— 语义是「我填进去的这串数字是什么坐标系」。
      *
-     * 背景：1.10.25 那个版本错误地把纠偏删掉了，并且在弹窗里提供了「关掉纠偏」的按钮，
-     * 很多用户点了之后 `coordShift=false` 被写进配置。现在证明纠偏本来就该开，
-     * 所以升级到本版本时强制复位一次；之后再手动关就不受影响了（用独立标记位判断）。
+     * 只在 [useCurrentLocation] = false 时生效。默认 [COORD_NONE]（原样提交）。
+     *
+     * 注意：这个设置**不影响**「使用当前位置」。系统 GPS 恒为 WGS-84，
+     * 自动模式会无条件转成 GCJ-02，不看这里。
+     *
+     * ## 为什么要用户自己声明
+     *
+     * 虚拟定位 App 自己带坐标系选择（WGS-84 / GCJ-02 / BD-09），注入什么完全取决于
+     * 用户在那里选哪个，App 无法推断。猜错就是多转一次：偏移转一次 **531 米**、
+     * 两次 **1063 米** —— 真机事故「实际差 100 米，学习通却提示超出 1015 米」正是这么来的。
+     */
+    var coordSource: String
+        get() = sp.getString("coordSource", COORD_NONE) ?: COORD_NONE
+        set(v) = sp.edit().putString("coordSource", v).apply()
+
+    /** 坐标系的可读名字，给设置页和日志用 */
+    fun coordSourceLabel(v: String = coordSource): String = when (v) {
+        COORD_WGS84 -> "WGS-84（GPS 原始）"
+        COORD_GCJ02 -> "GCJ-02（高德/腾讯）"
+        COORD_BD09 -> "BD-09（百度）"
+        else -> "不转换（原样提交）"
+    }
+
+    /**
+     * 一次性清理历史配置。
+     *
+     * 旧版本只有「坐标纠偏 开/关」这一个布尔开关，且默认开 —— 正是它造成了双重偏移。
+     * 现在改成显式坐标系且默认不转换，所以升级时直接把 `coordSource` 复位成
+     * [COORD_NONE]，把老用户的 `coordShift` 遗留值彻底丢掉。
      */
     fun migrateCoordShiftOnce() {
         if (sp.getBoolean("coordShiftMigrated", false)) return
         sp.edit()
-            .putBoolean("coordShift", true)
+            .putString("coordSource", COORD_NONE)
+            .remove("coordShift")
             .putBoolean("coordShiftMigrated", true)
             .apply()
     }

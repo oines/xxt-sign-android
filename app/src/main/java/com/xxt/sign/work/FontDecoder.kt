@@ -211,40 +211,83 @@ class FontDecoder(
 
         if (vectorsByRef.isEmpty()) return null
 
-        // 每个字在每套参考字体下的**完整候选排序**。
+        // 逐字流式汇总：候选字 -> (跨字体最高分, 该分来自哪套字体)。
         //
-        // 关键：不是只留「这套字体的第一名」，而是把每套字体对每个候选字的打分都留着，
-        // 因为判断「这个字认不认得出」必须看 **候选字之间** 的差距，而不是
-        // 「这套字体的第一名」和「那套字体的第一名」的差距。
+        // ## 为什么不再保存「每个字 × 每套字体的完整打分表」
         //
-        // 真机踩过：两套字体都认成「属」（0.95 / 0.94），差 0.01，
-        // 老逻辑把这个差当成「次优」，于是把明明认对的字报成「存疑」。
-        // 两套字体意见一致恰恰是**更强的证据**，不是歧义。
-        val perCharScores = HashMap<Char, List<Pair<ReferenceFont, Map<Char, Float>>>>()
+        // 旧实现给每个字、每套参考字体各建一个 `HashMap<Char, Float>(3900)`：
+        // `perCharScores[ch] = listOf(ref1 -> map(3900), ref2 -> map(3900), …)`。
+        // 一份卷子按 200 个不重复字算就是 200 × 6 × 3900 ≈ **470 万个条目**，
+        // 光这些 map 就要几百 MB，真机直接 OOM（崩溃日志：碎片化导致 88 字节都分配不了）。
+        //
+        // 但最终决策（下面 [Pick]）只用得到「每个字的第一名候选、第二名分数、第一名来自哪套字体」。
+        // 所以改成：每个字只保留一张**可复用**的候选分表，算完立刻压成前两名，然后清空复用。
+        // 内存从 O(字数 × 字体数 × 候选数) 降到 O(候选数)。
+        val aggScore = HashMap<Char, Float>(8192)
+        val aggRef = HashMap<Char, String>(256)
+        // 每个字在每套字体下的最高分，用来挑「基准字体」；字数 × 字体数，很小
+        val refBestByChar = ArrayList<FloatArray>(chars.size)
+        val picks = LinkedHashMap<Char, Pick>()
+
         for (ch in chars) {
             val probe = runCatching { source.renderSecret(ch, size) }.getOrNull() ?: continue
-            val perRef = vectorsByRef.map { (ref, pool2) ->
-                val map = HashMap<Char, Float>(pool2.size)
-                for ((c, v) in pool2) map[c] = cosine(probe, v)
-                ref to map
+            aggScore.clear()
+            aggRef.clear()
+            val refBest = FloatArray(vectorsByRef.size)
+            for ((idx, pair) in vectorsByRef.withIndex()) {
+                val (ref, pool2) = pair
+                var best = -1f
+                for ((c, v) in pool2) {
+                    val s = cosine(probe, v)
+                    if (s > best) best = s
+                    val cur = aggScore[c]
+                    if (cur == null || s > cur) {
+                        aggScore[c] = s
+                        aggRef[c] = ref.name
+                    }
+                }
+                refBest[idx] = best
             }
-            perCharScores[ch] = perRef
+            if (aggScore.isEmpty()) continue
+
+            // 只挑出第一名和第二名候选（聚合分）
+            var firstC: Char? = null
+            var firstS = -1f
+            var secondS = -1f
+            for ((c, s) in aggScore) {
+                if (s > firstS) {
+                    secondS = firstS
+                    firstC = c
+                    firstS = s
+                } else if (s > secondS) {
+                    secondS = s
+                }
+            }
+            val win = firstC ?: continue
+            picks[ch] = Pick(
+                char = win,
+                score = firstS,
+                second = secondS,
+                secondKnown = secondS > -1f,
+                ref = aggRef[win].orEmpty()
+            )
+            refBestByChar.add(refBest)
         }
-        if (perCharScores.isEmpty()) return null
+        aggScore.clear()
+        aggRef.clear()
+        if (picks.isEmpty()) return null
 
         val byRef = vectorsByRef.map { it.first }
 
         // 每套字体「把这个字认成它自己的第一名」时的分数中位数 → 用来挑基准字体
-        val refMedian = byRef.map { ref ->
+        val refMedian = byRef.mapIndexed { idx, ref ->
             ref to median(
-                perCharScores.values.mapNotNull { list ->
-                    list.firstOrNull { it.first == ref }?.second?.values?.maxOrNull()
-                }
+                refBestByChar.mapNotNull { arr -> arr.getOrNull(idx)?.takeIf { it > -1f } }
             )
         }.toMap()
         val bestRef = byRef.maxByOrNull { refMedian[it] ?: 0f } ?: byRef.first()
 
-        // 逐字裁决：
+        // 逐字裁决用的 [picks] 已经在上面的流式循环里算好了（每个字只留前两名候选）：
         //
         // 1) 对每个**候选字**，取它在所有参考字体里的最高分（多字体投票取最好）；
         // 2) 按这个汇总分排序，第一名就是答案；
@@ -252,31 +295,6 @@ class FontDecoder(
         //
         // 这样「两套字体都认成属」只会让「属」的汇总分更高、间距更大，
         // 而不会像老逻辑那样凭空造出一个 0.01 的假歧义。
-        data class Ranked(val char: Char, val score: Float, val ref: String)
-
-        val picks: Map<Char, Pick> = perCharScores.mapValues { (_, perRef) ->
-            // 汇总：候选字 -> (最高分, 该分来自哪套字体)
-            val agg = LinkedHashMap<Char, Pair<Float, String>>()
-            for ((ref, map) in perRef) {
-                for ((c, s) in map) {
-                    val cur = agg[c]
-                    if (cur == null || s > cur.first) agg[c] = s to ref.name
-                }
-            }
-            val ranked = agg.entries
-                .map { Ranked(it.key, it.value.first, it.value.second) }
-                .sortedByDescending { it.score }
-            val first = ranked.firstOrNull()
-            // 次优 = 第二名的**不同候选字**（同名候选不会重复出现，天然不同）
-            val second = ranked.getOrNull(1)
-            Pick(
-                char = first?.char,
-                score = first?.score ?: 0f,
-                second = second?.score ?: -1f,
-                secondKnown = second != null,
-                ref = first?.ref ?: bestRef.name
-            )
-        }
 
         val allScores = picks.values.map { it.score }
         val med = median(allScores)

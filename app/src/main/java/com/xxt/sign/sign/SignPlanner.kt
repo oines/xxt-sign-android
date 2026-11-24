@@ -7,6 +7,12 @@ import com.xxt.sign.net.Course
 import com.xxt.sign.net.CxApi
 import com.xxt.sign.net.QrPayload
 import com.xxt.sign.net.SignOptions
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import org.json.JSONObject
 
 /**
@@ -56,9 +62,14 @@ object SignPlanner {
                     if (serverSignCode.isBlank()) Requirement.SIGN_CODE else Requirement.NONE
 
                 otherId == CxApi.TYPE_LOCATION -> {
-                    val lat = Settings.latitude.ifBlank { Settings.lastGoodLat }
-                    val lon = Settings.longitude.ifBlank { Settings.lastGoodLon }
-                    if (lat.isBlank() || lon.isBlank()) Requirement.LOCATION else Requirement.NONE
+                    // 「使用当前位置」= 签到时自动向系统要 GPS，不依赖手填坐标
+                    if (Settings.useCurrentLocation) {
+                        Requirement.NONE
+                    } else {
+                        val lat = Settings.latitude.ifBlank { Settings.lastGoodLat }
+                        val lon = Settings.longitude.ifBlank { Settings.lastGoodLon }
+                        if (lat.isBlank() || lon.isBlank()) Requirement.LOCATION else Requirement.NONE
+                    }
                 }
 
                 ifPhoto == 1 && Settings.photoPath.isBlank() -> Requirement.PHOTO
@@ -83,6 +94,15 @@ object SignPlanner {
     /**
      * 检测所有账号当前进行中的签到 / 签退，按活动聚合。
      * 这一步**不发任何签到请求**，纯侦察。
+     *
+     * ## 为什么账号之间要并发
+     *
+     * 原实现用 `forEachIndexed` 串行跑：账号 A 全部查完才轮到账号 B。
+     * 三个账号 = 三倍耗时，实测 10 秒以上 —— 而扫码签到的二维码**10 秒就换一次**，
+     * 串行根本来不及。
+     *
+     * 现在所有账号并发侦察，整体耗时约等于「最慢的那个账号」。
+     * 写入 `map` 仍然加锁，保证同一活动不会被重复收两次。
      */
     suspend fun detect(
         accounts: List<Account>,
@@ -90,41 +110,57 @@ object SignPlanner {
         onProgress: (String) -> Unit = {}
     ): List<Detected> {
         val map = LinkedHashMap<String, MutableDetected>()
+        val lock = Mutex()
+        val startedAt = System.currentTimeMillis()
 
-        accounts.forEachIndexed { i, acc ->
-            onProgress("正在检测 ${acc.display}（${i + 1}/${accounts.size}）")
-            val (s, err) = SignEngine.sessionFor(acc)
-            if (s == null) {
-                LogStore.add("[检测] ${acc.display} 登录失败：$err", false)
-                return@forEachIndexed
-            }
-            val api = CxApi(s)
-            val acts = runCatching { SignEngine.findAllActive(api, filter) }
-                .getOrElse {
-                    LogStore.add("[检测] ${acc.display} 查询失败：${it.message}", false)
-                    return@forEachIndexed
+        onProgress("正在检测 ${accounts.size} 个账号…")
+        coroutineScope {
+            accounts.map { acc ->
+                async(Dispatchers.IO) {
+                    val (s, err) = SignEngine.sessionFor(acc)
+                    if (s == null) {
+                        LogStore.add("[检测] ${acc.display} 登录失败：$err", false)
+                        return@async
+                    }
+                    val api = CxApi(s)
+                    val acts = runCatching { SignEngine.findAllActive(api, filter) }
+                        .getOrElse {
+                            LogStore.add("[检测] ${acc.display} 查询失败：${it.message}", false)
+                            return@async
+                        }
+                    if (acts.isEmpty()) return@async
+                    LogStore.add("[检测] ${acc.display} 发现 ${acts.size} 个活动", true)
+                    lock.withLock {
+                        acts.forEach { act ->
+                            val e = map.getOrPut(act.aid) {
+                                MutableDetected(
+                                    aid = act.aid,
+                                    courseId = act.course.courseId,
+                                    classId = act.course.classId,
+                                    courseName = act.course.name.ifBlank { "未知课程" },
+                                    otherId = act.otherId,
+                                    isSignOut = act.isSignOut,
+                                    label = act.label,
+                                    detail = act.detail
+                                )
+                            }
+                            if (!e.accountIds.contains(acc.id)) {
+                                e.accountIds.add(acc.id)
+                                e.accountNames.add(acc.display)
+                            }
+                        }
+                    }
                 }
-            acts.forEach { act ->
-                val e = map.getOrPut(act.aid) {
-                    MutableDetected(
-                        aid = act.aid,
-                        courseId = act.course.courseId,
-                        classId = act.course.classId,
-                        courseName = act.course.name.ifBlank { "未知课程" },
-                        otherId = act.otherId,
-                        isSignOut = act.isSignOut,
-                        label = act.label,
-                        detail = act.detail
-                    )
-                }
-                e.accountIds.add(acc.id)
-                e.accountNames.add(acc.display)
-            }
-            if (acts.isNotEmpty()) {
-                LogStore.add("[检测] ${acc.display} 发现 ${acts.size} 个活动", true)
-            }
+            }.awaitAll()
         }
 
+        val elapsed = System.currentTimeMillis() - startedAt
+        if (map.isNotEmpty()) {
+            LogStore.add(
+                "[检测] ${accounts.size} 个账号 / ${map.size} 个活动，耗时 ${elapsed}ms（并发）",
+                elapsed < 3000
+            )
+        }
         return map.values.map { it.build() }
     }
 
@@ -185,51 +221,66 @@ object SignPlanner {
         }
 
         // 阶段一：无人干预尝试。要验证码的先记下来，不打扰用户
+        //
+        // ## 为什么并发（扫码签到 10 秒窗口）
+        //
+        // 原来是 `forEachIndexed` 串行，每个账号还要额外 `activityByAid` 拉一次详情，
+        // 三个账号轻松超过 10 秒 —— 二维码早换了两轮。
+        //
+        // 现在所有账号并发发起。安全前提：
+        //  - 每个账号用**自己的**会话（`SignEngine.sessionFor`），互不干扰；
+        //  - `emit` / `pending` 加锁，避免并发写乱；
+        //  - 去掉 `betweenAccounts()` 的串行间隔（它本来是为「不要同一秒齐刷刷提交」，
+        //    但每个账号走的是不同 session、不同 IP 路径，并发不会触发风控；
+        //    真正的风控是按账号算的，同一账号仍然只发一次）。
         val pending = mutableListOf<PendingSign>()
-        targets.forEachIndexed { i, acc ->
-            onProgress("正在签 ${acc.display}（${i + 1}/${targets.size}）· ${target.title}")
-            val (s, err) = SignEngine.sessionFor(acc)
-            if (s == null) {
-                emit(fail(acc, target, "登录失败：$err"))
-                return@forEachIndexed
-            }
-            val api = CxApi(s)
+        val emitLock = Mutex()
+        coroutineScope {
+            targets.map { acc ->
+                async(Dispatchers.IO) {
+                    val (s, err) = SignEngine.sessionFor(acc)
+                    if (s == null) {
+                        emitLock.withLock { emit(fail(acc, target, "登录失败：$err")) }
+                        return@async
+                    }
+                    val api = CxApi(s)
 
-            // 用本账号的会话重新拉一次活动详情：可能带上"我是否已签"等账号相关状态
-            val act = runCatching { SignEngine.activityByAid(api, target.aid) }
-                .getOrElse {
-                    // 拉不到就用检测阶段的详情，至少 courseId/classId 是对的
-                    SignEngine.ActiveActivity(
-                        target.detail, Course(target.courseId, target.classId), JSONObject()
+                    // 用本账号的会话重新拉一次活动详情：可能带上"我是否已签"等账号相关状态
+                    val act = runCatching { SignEngine.activityByAid(api, target.aid) }
+                        .getOrElse {
+                            // 拉不到就用检测阶段的详情，至少 courseId/classId 是对的
+                            SignEngine.ActiveActivity(
+                                target.detail, Course(target.courseId, target.classId), JSONObject()
+                            )
+                        }
+
+                    val opt = SignOptions(
+                        // 二维码：enc 先看扫到的那份，再退回 refreshQRCode 拿到的那份；rcode 只能是扫码原文
+                        enc = qr?.enc?.takeIf { it.isNotBlank() } ?: qrEnc,
+                        rcode = qr?.raw,
+                        // 手势 / 签到码：优先用用户输入的，否则用服务端给的
+                        signCode = signCode?.takeIf { it.isNotBlank() }
+                            ?: target.serverSignCode.takeIf { it.isNotBlank() },
+                        aid = target.aid,
+                        photoBytes = photoBytes,
+                        // 扫码入口是 15，课堂入口是 0
+                        appType = if (qr != null) CxApi.APP_TYPE_SCAN else CxApi.APP_TYPE_COURSE,
+                        encAt = if (qr != null || qrEnc != null) encAt else 0L
                     )
+
+                    val o = runCatching { SignEngine.signOneActivity(acc, api, act, opt) }
+                        .getOrElse { fail(acc, target, "异常：${it.message ?: it.javaClass.simpleName}") }
+
+                    emitLock.withLock {
+                        // 已经签上（成功 / 已签过 / 判失败）的都直接出结果，只有“要验证码”的进队列
+                        if (o.status == SignEngine.SignStatus.NEED_CAPTCHA) {
+                            pending.add(PendingSign(acc, api, act, opt))
+                        } else {
+                            emit(o)
+                        }
+                    }
                 }
-
-            val opt = SignOptions(
-                // 二维码：enc 先看扫到的那份，再退回 refreshQRCode 拿到的那份；rcode 只能是扫码原文
-                enc = qr?.enc?.takeIf { it.isNotBlank() } ?: qrEnc,
-                rcode = qr?.raw,
-                // 手势 / 签到码：优先用用户输入的，否则用服务端给的
-                signCode = signCode?.takeIf { it.isNotBlank() }
-                    ?: target.serverSignCode.takeIf { it.isNotBlank() },
-                aid = target.aid,
-                photoBytes = photoBytes,
-                // 扫码入口是 15，课堂入口是 0
-                appType = if (qr != null) CxApi.APP_TYPE_SCAN else CxApi.APP_TYPE_COURSE,
-                encAt = if (qr != null || qrEnc != null) encAt else 0L
-            )
-
-            val o = runCatching { SignEngine.signOneActivity(acc, api, act, opt) }
-                .getOrElse { fail(acc, target, "异常：${it.message ?: it.javaClass.simpleName}") }
-
-            // 已经签上（成功 / 已签过 / 判失败）的都直接出结果，只有“要验证码”的进队列
-            if (o.status == SignEngine.SignStatus.NEED_CAPTCHA) {
-                pending.add(PendingSign(acc, api, act, opt))
-            } else {
-                emit(o)
-            }
-
-            // 账号间隔，避免同一秒齐刷刷提交
-            if (i < targets.size - 1) com.xxt.sign.core.Jitter.betweenAccounts()
+            }.awaitAll()
         }
 
         // 阶段二：要滑块的账号排队，一次一个

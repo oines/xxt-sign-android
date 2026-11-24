@@ -513,14 +513,89 @@ class CxApi(private val s: CxSession) {
             .ifBlank { detail.strAny("locationLatitude", "latitude") }
         val lon = info?.strAny("locationLongitude", "longitude").orEmpty()
             .ifBlank { detail.strAny("locationLongitude", "longitude") }
-        if (ok(lat) && ok(lon)) return SignLocation(address, lat, lon)
+        if (ok(lat) && ok(lon)) {
+            // 服务端给了教师标注点：直接用它，距离必然在范围内。
+            LogStore.add("[签到] 位置：采用服务端返回的教师坐标 $lat,$lon", true)
+            return SignLocation(address, lat, lon)
+        }
 
         val s = com.xxt.sign.core.Settings
+
+        // ===== 模式一：使用当前位置（系统 GPS 自动取，**原样提交，不做任何换算**） =====
+        //
+        // ## 为什么不再转成 GCJ-02
+        //
+        // 曾经在这里无条件做一次 WGS→GCJ（理由是「系统 GPS 恒为 WGS」）。但真机实测推翻了它：
+        //
+        //   系统 GPS 原始(WGS)  31.891270, 118.896994  离教室 652 米
+        //   转一次后(GCJ)       31.889088, 118.902002  离教室 131 米   ← 更近了
+        //
+        // 而提交这个「更近」的 GCJ 值，学习通反而报**超出范围**。只有一种解释：
+        // **学习通服务端自己会把收到的坐标当 WGS 转成 GCJ**，我们再转一次就是双重偏移，
+        // 131 米被拉到 662 米量级，正是历史上「实际差 100 米却提示超出 1015 米」的成因。
+        //
+        // 所以现在：系统给什么就提交什么。若日后证实服务端不转换，再改回来。
+        if (s.useCurrentLocation) {
+            val fix = com.xxt.sign.core.LocationHelper.current(
+                com.xxt.sign.App.ctx,
+                timeoutMs = 12_000L,
+                acceptCachedImmediately = true,
+                useCache = true
+            )
+            if (fix != null) {
+                val rawLat = fix.location.latitude
+                val rawLon = fix.location.longitude
+                val plat = String.format(java.util.Locale.US, "%.6f", rawLat)
+                val plon = String.format(java.util.Locale.US, "%.6f", rawLon)
+                LogStore.add(
+                    "[签到] 位置：使用当前位置（${fix.provider} 精度${fix.accuracy}m${if (fix.fromCache) " 缓存" else ""}）" +
+                        " 原样提交 $plat,$plon（不做坐标换算）",
+                    true
+                )
+                return SignLocation(address.ifBlank { s.address }, plat, plon)
+            }
+            // 拿不到实时定位：继续往下走，退回手动坐标，避免整次签到失败
+            LogStore.add("[签到] 位置：使用当前位置失败，退回手动坐标", false)
+        }
+
+        // ===== 模式二：使用用户填写的坐标（按 coordSource 解释它是什么坐标系） =====
         val uLat = s.latitude.ifBlank { s.lastGoodLat }
         val uLon = s.longitude.ifBlank { s.lastGoodLon }
         if (ok(uLat) && ok(uLon)) {
             val uAddr = com.xxt.sign.core.Settings.address.ifBlank { address }
-            return SignLocation(uAddr, uLat, uLon)
+
+            // 按用户声明的坐标系把输入值换成学习通使用的 GCJ-02。
+            // 默认 coordSource = none → 原样提交，绝不多转。
+            // 存储里永远保留用户看到/填写的原始值，所以反复保存不会累加偏移。
+            val src = s.coordSource
+            var plat = uLat
+            var plon = uLon
+            val rawLatD = uLat.toDoubleOrNull()
+            val rawLonD = uLon.toDoubleOrNull()
+            if (rawLatD != null && rawLonD != null && src != com.xxt.sign.core.Settings.COORD_NONE) {
+                val g = com.xxt.sign.core.GeoCoord.toGcj(rawLatD, rawLonD, src)
+                if (g.lat != rawLatD || g.lon != rawLonD) {
+                    plat = String.format(java.util.Locale.US, "%.6f", g.lat)
+                    plon = String.format(java.util.Locale.US, "%.6f", g.lon)
+                    val moved = com.xxt.sign.core.GeoCoord.distanceMeters(rawLatD, rawLonD, g.lat, g.lon)
+                    LogStore.add(
+                        "[签到] 坐标换算（${s.coordSourceLabel(src)}）：$uLat,$uLon" +
+                            " → $plat,$plon（位移 ${"%.0f".format(java.util.Locale.US, moved)} 米）",
+                        true
+                    )
+                }
+            }
+
+            // 一定要把「实际发出去的坐标」打出来。学生报「实际差 100 米却提示超出 1000 米」时，
+            // 只有这一行能证明 App 到底提交了什么（是原样、还是被换算过）。
+            LogStore.add(
+                "[签到] 位置：提交 $plat,$plon" +
+                    "（填写值=$uLat,$uLon，来源=${if (s.latitude.isNotBlank()) "设置/手动填写" else "上次成功坐标"}，" +
+                    "坐标系=${s.coordSourceLabel(src)}）" +
+                    if (address.isNotBlank()) " 地址=$address" else "",
+                true
+            )
+            return SignLocation(uAddr, plat, plon)
         }
         return null
     }
@@ -564,7 +639,7 @@ class CxApi(private val s: CxSession) {
         private const val URL_PRESIGN = "https://mobilelearn.chaoxing.com/newsign/preSign"
 
         /** getPPTActiveInfo 的缓存时长：一次签到内多个环节共用，但不能让 enc / 闸门过期 */
-        private const val INFO_TTL_MS = 15_000L
+        private const val INFO_TTL_MS = 60_000L
 
         const val TYPE_NORMAL = 0
         const val TYPE_QRCODE = 2

@@ -722,8 +722,6 @@ class SignFragment : Fragment() {
     private fun showSettings() {
         val items = arrayOf(
             "位置坐标　—　${locSummary()}",
-            "定位来源　—　${if (Settings.gpsOnly) "仅 GPS（准）" else "自动（取最准）"}",
-            "坐标纠偏　—　${if (Settings.coordShift) "开（系统坐标→地图坐标，推荐）" else "关（用系统原始坐标）"}",
             "拍照签到图片　—　${if (Settings.photoPath.isBlank()) "未选" else "已选"}",
             "课堂范围　—　${courseSummary()}",
             "巡检频率　—　${Settings.intervalSeconds} 秒/轮",
@@ -735,13 +733,11 @@ class SignFragment : Fragment() {
             .setItems(items) { _, which ->
                 when (which) {
                     0 -> showLocationDialog(null)
-                    1 -> showGpsSourcePicker()
-                    2 -> showCoordShiftPicker()
-                    3 -> showPhotoOptions()
-                    4 -> showCoursePicker()
-                    5 -> showIntervalPicker()
-                    6 -> previewGesture()
-                    7 -> pickAccountForWebSign(null)
+                    1 -> showPhotoOptions()
+                    2 -> showCoursePicker()
+                    3 -> showIntervalPicker()
+                    4 -> previewGesture()
+                    5 -> pickAccountForWebSign(null)
                 }
             }
             .setNegativeButton("关闭", null)
@@ -749,35 +745,43 @@ class SignFragment : Fragment() {
     }
 
     /**
-     * 坐标纠偏开关（默认开）。
+     * 输入坐标所用坐标系（在「位置坐标」弹窗内部选择，不再单独占一个设置项）。
      *
-     * 虚拟定位 App 用高德底图（GCJ-02）显示，注入系统时会换算成 WGS-84；
-     * 学习通按 GCJ-02 校验，所以必须转回来，否则差 531 米、报「不在可签到范围内」。
+     * 语义很明确：**「我填进去的这串数字是什么坐标系」**。
+     *
+     * ## 为什么不自动纠偏
+     *
+     * 虚拟定位 App 自己带坐标系选择（WGS-84 / GCJ-02 / BD-09），注入什么完全取决于
+     * 用户在那里选哪个，App 猜不准。猜错就多转一次（531 米），甚至两次（1063 米）——
+     * 真机上出现过「实际差 100 米，学习通却提示超出 1015 米」，就是这么来的。
+     *
+     * 所以默认 **不转换、原样提交**，需要换算时由用户在这里明确指定坐标系的种类。
      *
      * **注意**：绝对不能在这里用 `setMessage` —— `MaterialAlertDialogBuilder` 同时
      * `setMessage` + `setSingleChoiceItems` 时，部分版本会只渲染 message、把选项列表吞掉，
      * 表现就是「设置里点进去只有一段文字，选不了」。说明文字放 title。
      */
-    private fun showCoordShiftPicker() {
-        // 用带状态标记的文案，让用户一眼看出当前是开还是关
-        val modes = arrayOf(
-            "开：系统坐标 → 地图坐标 GCJ-02（推荐）",
-            "关：直接用系统给的原始坐标"
+    private fun showCoordSourcePicker(onPicked: (() -> Unit)? = null) {
+        val options = listOf(
+            Settings.COORD_NONE to "不转换：原样提交（推荐，默认）",
+            Settings.COORD_WGS84 to "WGS-84：GPS 原始坐标，提交前换算成 GCJ-02",
+            Settings.COORD_GCJ02 to "GCJ-02：高德/腾讯/学习通口径，原样提交",
+            Settings.COORD_BD09 to "BD-09：百度坐标，提交前换算成 GCJ-02"
         )
-        val idx = if (Settings.coordShift) 0 else 1
+        val idx = options.indexOfFirst { it.first == Settings.coordSource }.coerceAtLeast(0)
         MaterialAlertDialogBuilder(requireContext())
             .setTitle(
-                "坐标纠偏（当前：${if (Settings.coordShift) "开" else "关"}）\n" +
-                    "开＝显示和提交你在地图上选的点；关＝提交系统原始值。"
+                "我填的坐标是什么坐标系？（当前：${Settings.coordSourceLabel()}）\n" +
+                    "只在「使用当前位置」关闭时生效。不确定就选「不转换」—— 那表示原样提交，不会多转一次。"
             )
-            .setSingleChoiceItems(modes, idx) { dialog, which ->
-                Settings.coordShift = which == 0
+            .setSingleChoiceItems(options.map { it.second }.toTypedArray(), idx) { dialog, which ->
+                val v = options[which].first
+                Settings.coordSource = v
                 dialog.dismiss()
                 refreshOptions()
-                showStatus(
-                    if (Settings.coordShift) "坐标纠偏：开（与地图/学习通坐标一致）"
-                    else "坐标纠偏：关（用系统原始坐标）"
-                )
+                showStatus("坐标坐标系：${Settings.coordSourceLabel(v)}")
+                LogStore.add("[定位] 坐标系已设为 ${Settings.coordSourceLabel(v)}", true)
+                onPicked?.invoke()
             }
             .setNegativeButton("取消", null)
             .show()
@@ -832,77 +836,149 @@ class SignFragment : Fragment() {
         toast("已恢复默认")
     }
 
-    private fun showGpsSourcePicker() {
-        val modes = arrayOf("仅 GPS（准，但室内可能拿不到）", "自动：从系统获取并取最准的")
-        val idx = if (Settings.gpsOnly) 0 else 1
-        // 同上：不要同时 setMessage + setSingleChoiceItems，否则选项可能不显示。
-        MaterialAlertDialogBuilder(requireContext())
-            .setTitle("定位来源（只影响取坐标，手动坐标优先）")
-            .setSingleChoiceItems(modes, idx) { dialog, which ->
-                Settings.gpsOnly = which == 0
-                dialog.dismiss()
-                refreshOptions()
-                showStatus(if (Settings.gpsOnly) "定位来源：仅 GPS" else "定位来源：自动（从系统获取）")
-            }
-            .setNegativeButton("取消", null)
-            .show()
-    }
-
-    @SuppressLint("MissingPermission")
     private fun showLocationDialog(then: (() -> Unit)?) {
         val d = DialogLocationBinding.inflate(layoutInflater)
         d.etLat.setText(Settings.latitude)
         d.etLon.setText(Settings.longitude)
         d.etAddress.setText(Settings.address)
 
-        // 没存过坐标时：
-        // · 自动模式：直接向系统要一次实时定位（填「当前定位」按钮改为强制不用缓存）
-        // · 仅 GPS：先把系统缓存填进来，用户再点「用当前定位填充」实时取
-        if (Settings.latitude.isBlank() && Settings.longitude.isBlank()) {
-            if (!Settings.gpsOnly) {
-                if (hasLocationPermission()) fillCurrentLocation(d) else requestLocationPermission(d)
+        /**
+         * 把「使用当前位置」开关的状态反映到界面：
+         *  - 开：输入框和「用当前定位填充」按钮都禁用（签到时自动取，用户不用管）
+         *  - 关：启用，并显示坐标系入口与对照
+         */
+        fun applyUseCurrent() {
+            val on = d.swUseCurrent.isChecked
+            Settings.useCurrentLocation = on
+            val manual = !on
+            d.etLat.isEnabled = manual
+            d.etLon.isEnabled = manual
+            d.etAddress.isEnabled = manual
+            d.btnUseCurrent.isEnabled = manual
+            d.btnCoordSource.isEnabled = manual
+            d.btnCoordSource.text = "我填的坐标是：${Settings.coordSourceLabel()}"
+            d.tvCoordHint.visibility =
+                if (manual && d.etLat.text?.toString()?.isNotBlank() == true) View.VISIBLE else View.GONE
+            d.tvUseCurrentDesc.text = if (on) {
+                "签到时自动从系统 GPS 取位置，**原样提交，不做坐标换算**。下面的坐标和坐标系设置不生效。"
             } else {
-                val cached = LocationHelper.manager(requireContext())?.let { LocationHelper.bestCached(it) }
-                if (cached != null) {
-                    val rawLat = cached.location.latitude
-                    val rawLon = cached.location.longitude
-                    fillLatLon(d, rawLat, rawLon)
-                    showStatus(
-                        "已预填系统缓存位置（${cached.provider}·精度 ${cached.accuracy} 米·${cached.ageText}）" +
-                            shiftNote(rawLat, rawLon) + "，不对就点「用当前定位填充」"
-                    )
-                }
+                "使用下面填写的坐标。请按「我填的坐标是什么坐标系」选择对应类型。"
+            }
+        }
+
+        d.swUseCurrent.isChecked = Settings.useCurrentLocation
+        d.swUseCurrent.setOnCheckedChangeListener { _, _ -> applyUseCurrent() }
+        d.btnCoordSource.setOnClickListener { showCoordSourcePicker { applyUseCurrent() } }
+
+        // 没存过坐标时预填一次系统缓存位置，方便用户看到当前大概在哪
+        if (Settings.latitude.isBlank() && Settings.longitude.isBlank()) {
+            val cached = LocationHelper.manager(requireContext())?.let { LocationHelper.bestCached(it) }
+            if (cached != null) {
+                val rawLat = cached.location.latitude
+                val rawLon = cached.location.longitude
+                fillLatLon(d, rawLat, rawLon)
+                showStatus(
+                    "已预填系统缓存位置（${cached.provider}·精度 ${cached.accuracy} 米·${cached.ageText}）" +
+                        "，不对就点「用当前定位填充」"
+                )
             }
         }
         d.btnUseCurrent.setOnClickListener {
             if (hasLocationPermission()) fillCurrentLocation(d) else requestLocationPermission(d)
         }
-        MagicDialog.show(requireContext(), "位置签到坐标", d.root) {
-            val lat = d.etLat.text?.toString()?.trim().orEmpty()
-            val lon = d.etLon.text?.toString()?.trim().orEmpty()
-            val addr = d.etAddress.text?.toString()?.trim().orEmpty()
 
-            // 两个都空 = 想清空。若原来存着坐标，先确认一次，
-            // 避免误点确定把好数据冲掉（真被空值覆盖过一次）
-            if (lat.isBlank() && lon.isBlank() &&
-                (Settings.latitude.isNotBlank() || Settings.longitude.isNotBlank())
-            ) {
-                MaterialAlertDialogBuilder(requireContext())
-                    .setTitle("清空已保存的坐标？")
-                    .setMessage("当前存的是 ${Settings.latitude},${Settings.longitude}。确定要清空吗？")
-                    .setPositiveButton("清空") { _, _ ->
-                        Settings.latitude = ""; Settings.longitude = ""; Settings.address = ""
-                        refreshOptions()
-                    }
-                    .setNegativeButton("保留", null)
-                    .show()
-                return@show
+        // 坐标系对照：只在「使用当前位置」关闭时才有意义（那时才用手填的坐标）。
+        // 实时列出各选项下实际会提交什么，用户拿地图一对就能确定该选哪个。
+        fun refreshCoordHint() {
+            if (d.swUseCurrent.isChecked) {
+                d.tvCoordHint.visibility = View.GONE
+                return
+            }
+            val lat = d.etLat.text?.toString()?.trim()?.toDoubleOrNull()
+            val lon = d.etLon.text?.toString()?.trim()?.toDoubleOrNull()
+            if (lat == null || lon == null) {
+                d.tvCoordHint.visibility = View.GONE
+                return
+            }
+            d.tvCoordHint.visibility = View.VISIBLE
+
+            val none = String.format(Locale.US, "%.6f, %.6f", lat, lon)
+            val wgs = GeoCoord.wgsToGcj(lat, lon)
+            val bd = GeoCoord.bd09ToGcj(lat, lon)
+            val dWgs = GeoCoord.distanceMeters(lat, lon, wgs.lat, wgs.lon)
+            val dBd = GeoCoord.distanceMeters(lat, lon, bd.lat, bd.lon)
+
+            val cur = Settings.coordSource
+            fun mark(v: String) = if (v == cur) "  ← 当前" else ""
+
+            val sb = StringBuilder()
+            sb.append("我填的 ").append(none).append("，各选项实际提交：\n")
+            sb.append("· 不转换 / GCJ-02 → ").append(none)
+                .append(mark(Settings.COORD_NONE)).append('\n')
+            sb.append("· WGS-84 → ")
+                .append(String.format(Locale.US, "%.6f, %.6f", wgs.lat, wgs.lon))
+                .append(String.format(Locale.US, "（偏 %.0f 米）", dWgs))
+                .append(mark(Settings.COORD_WGS84)).append('\n')
+            sb.append("· BD-09 → ")
+                .append(String.format(Locale.US, "%.6f, %.6f", bd.lat, bd.lon))
+                .append(String.format(Locale.US, "（偏 %.0f 米）", dBd))
+                .append(mark(Settings.COORD_BD09))
+            sb.append("\n哪个数和你地图上的点一致，就选哪个。")
+
+            d.tvCoordHint.text = sb.toString()
+            d.tvCoordHint.setTextColor(
+                requireContext().getColor(com.xxt.sign.R.color.muted)
+            )
+        }
+
+        val latWatcher = object : android.text.TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
+            override fun afterTextChanged(s: android.text.Editable?) { refreshCoordHint() }
+        }
+        d.etLat.addTextChangedListener(latWatcher)
+        d.etLon.addTextChangedListener(latWatcher)
+        applyUseCurrent()
+        refreshCoordHint()
+
+        MagicDialog.show(requireContext(), "位置签到坐标", d.root) {
+            val useCurrent = d.swUseCurrent.isChecked
+            Settings.useCurrentLocation = useCurrent
+
+            // 「使用当前位置」模式下不碰已存的手动坐标：
+            // 用户开着自动定位时输入框是禁用的，里面的值可能是空白，不能拿它把好数据冲掉。
+            if (!useCurrent) {
+                val lat = d.etLat.text?.toString()?.trim().orEmpty()
+                val lon = d.etLon.text?.toString()?.trim().orEmpty()
+                val addr = d.etAddress.text?.toString()?.trim().orEmpty()
+
+                // 两个都空 = 想清空。若原来存着坐标，先确认一次，
+                // 避免误点确定把好数据冲掉（真被空值覆盖过一次）
+                if (lat.isBlank() && lon.isBlank() &&
+                    (Settings.latitude.isNotBlank() || Settings.longitude.isNotBlank())
+                ) {
+                    MaterialAlertDialogBuilder(requireContext())
+                        .setTitle("清空已保存的坐标？")
+                        .setMessage("当前存的是 ${Settings.latitude},${Settings.longitude}。确定要清空吗？")
+                        .setPositiveButton("清空") { _, _ ->
+                            Settings.latitude = ""; Settings.longitude = ""; Settings.address = ""
+                            refreshOptions()
+                        }
+                        .setNegativeButton("保留", null)
+                        .show()
+                    return@show
+                }
+
+                Settings.latitude = lat
+                Settings.longitude = lon
+                Settings.address = addr
             }
 
-            Settings.latitude = lat
-            Settings.longitude = lon
-            Settings.address = addr
             refreshOptions()
+            showStatus(
+                if (useCurrent) "签到时将自动使用系统 GPS 当前位置（原样提交，不换算）"
+                else "签到将使用你填写的坐标（${Settings.coordSourceLabel()}）"
+            )
             then?.invoke()
         }
     }
@@ -944,9 +1020,7 @@ class SignFragment : Fragment() {
             val fix = withContext(Dispatchers.IO) {
                 LocationHelper.current(
                     requireContext(),
-                    mode = if (Settings.gpsOnly) LocationHelper.SourceMode.GPS_ONLY
-                    else LocationHelper.SourceMode.AUTO,
-                    // 「用目前定位填充」必须重新向系统要一次，不能拿系统缓存糊弄；
+                    // 「用当前定位填充」必须重新向系统要一次，不能拿系统缓存糊弄；
                     // 实时拿不到就报错，让用户重试/手填，而不是悄悄提交旧位置。
                     acceptCachedImmediately = false,
                     useCache = false
@@ -968,6 +1042,7 @@ class SignFragment : Fragment() {
             } else {
                 val rawLat = fix.location.latitude
                 val rawLon = fix.location.longitude
+                // 原样写入，不换算（换算只在提交时按用户选的坐标系做一次）
                 fillLatLon(d, rawLat, rawLon)
                 val src = if (fix.fromCache) "缓存" else "实时"
                 val warn = when {
@@ -975,15 +1050,13 @@ class SignFragment : Fragment() {
                     fix.stale -> "　⚠ 这是 ${fix.ageText} 的位置，不对请手动改"
                     else -> ""
                 }
-                // 诊断：把「系统给的原始坐标」和「最终要提交的坐标」都打出来。
-                // 只要这两个数不一样，就是纠偏在起作用 —— 排查「模拟器显示的和 App 里的不一致」
-                // 时，这一行能直接定位。
                 val finalLat = d.etLat.text?.toString()?.trim().orEmpty()
                 val finalLon = d.etLon.text?.toString()?.trim().orEmpty()
                 LogStore.add(
                     "[定位] 系统原始 ${"%.6f".format(Locale.US, rawLat)},${"%.6f".format(Locale.US, rawLon)}" +
-                        " → 将提交 $finalLat,$finalLon" +
-                        "（纠偏=${if (Settings.coordShift) "开" else "关"}）",
+                        " provider=${fix.provider}" +
+                        " → 填入 $finalLat,$finalLon" +
+                        "（坐标系=${Settings.coordSourceLabel()}，提交时才换算）",
                     true
                 )
                 showStatus(
@@ -995,31 +1068,40 @@ class SignFragment : Fragment() {
     }
 
     /**
-     * 把系统坐标写进输入框。
+     * 把系统坐标写进输入框 —— **原样写入，不做任何换算**。
      *
-     * **默认做 WGS-84 → GCJ-02 转换**（[Settings.coordShift] 默认开）。
+     * ## 为什么不再自动纠偏
      *
-     * 真机实测：虚拟定位 App 用高德底图显示 GCJ-02（`31.889087, 118.902128`），
-     * 但注入系统时会换算成 WGS-84（`31.891269, 118.897120`）。
-     * `LocationManager` 交给 App 的是 WGS-84，学习通按 GCJ-02 校验，
-     * 所以必须转回来 —— 转完正好等于模拟器上显示的那个点，误差 0。
+     * 虚拟定位 App 自己就能选注入哪种坐标系（实测 LocationSpoofer 提供
+     * **WGS-84 / GCJ-02 / BD-09** 三选）。它注入什么，App 这边完全无从判断；
+     * 一旦猜错就是多转一次：GCJ-02 偏移转一次 **531 米**、两次 **1063 米**。
      *
-     * 手动粘贴坐标不走这里，粘贴的通常已经是地图坐标。
+     * 真机事故事实：同学人在教室、实际离签到点约 100 米，学习通却提示
+     * **超出范围 1015 米** —— 正是「多转了一次」的量级。
+     *
+     * 所以现在：输入框显示什么，存的就是什么；**换算只在提交时按用户选的坐标系做一次**
+     * （见 [Settings.coordSource] 与 [GeoCoord.toGcj]）。这样反复打开设置、反复保存都不会累加偏移。
      */
     private fun fillLatLon(d: DialogLocationBinding, rawLat: Double, rawLon: Double) {
-        val target = if (Settings.coordShift) GeoCoord.wgsToGcj(rawLat, rawLon)
-        else GeoCoord.LatLng(rawLat, rawLon)
-        d.etLat.setText(String.format(Locale.US, "%.6f", target.lat))
-        d.etLon.setText(String.format(Locale.US, "%.6f", target.lon))
+        d.etLat.setText(String.format(Locale.US, "%.6f", rawLat))
+        d.etLon.setText(String.format(Locale.US, "%.6f", rawLon))
     }
 
-    /** 纠偏时给状态栏补一句「原始坐标 + 差多少米」，方便和地图 App 对点 */
+    /**
+     * 状态栏附注：告诉用户「当前选的坐标系下，提交时会变成什么」。
+     *
+     * 默认「不转换」时返回空串，不打扰；选了 WGS-84 / BD-09 才提示换算后的坐标和位移，
+     * 方便和地图 App 上的点对一对。
+     */
     private fun shiftNote(rawLat: Double, rawLon: Double): String {
-        if (!Settings.coordShift) return ""
-        val t = GeoCoord.wgsToGcj(rawLat, rawLon)
+        val src = Settings.coordSource
+        if (src == Settings.COORD_NONE || src == Settings.COORD_GCJ02) return ""
+        val t = GeoCoord.toGcj(rawLat, rawLon, src)
         val d = GeoCoord.distanceMeters(rawLat, rawLon, t.lat, t.lon)
         return String.format(
-            Locale.US, " · 已纠偏为地图坐标（原始 %.6f,%.6f，差 %.0f 米）", rawLat, rawLon, d
+            Locale.US,
+            " · 按「%s」提交时会换算成地图坐标 %.6f,%.6f（位移 %.0f 米）",
+            Settings.coordSourceLabel(src), t.lat, t.lon, d
         )
     }
 
@@ -1206,9 +1288,13 @@ class SignFragment : Fragment() {
         }
 
     private fun locSummary(): String =
-        if (Settings.latitude.isNotBlank() && Settings.longitude.isNotBlank())
-            "${Settings.latitude},${Settings.longitude}"
-        else "未设置"
+        if (Settings.useCurrentLocation) {
+            "自动（系统 GPS，原样提交）"
+        } else if (Settings.latitude.isNotBlank() && Settings.longitude.isNotBlank()) {
+            "${Settings.latitude},${Settings.longitude}（${Settings.coordSourceLabel()}）"
+        } else {
+            "未设置"
+        }
 
     private fun courseSummary(): String {
         val f = Settings.courseFilter

@@ -12,8 +12,8 @@ android {
         applicationId = "com.xxt.sign"
         minSdk = 24
         targetSdk = 34
-        versionCode = 58
-        versionName = "1.10.40"
+        versionCode = 66
+        versionName = "1.13.0"
     }
 
     buildTypes {

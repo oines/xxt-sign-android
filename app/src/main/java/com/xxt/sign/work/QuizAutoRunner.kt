@@ -95,7 +95,18 @@ class QuizAutoRunner(
                     if (r.submitted || r.needsHuman) {
                         QuizHandledStore.mark(accountId, job.key, r.needsHuman)
                     } else {
-                        log("[测验] ${job.chapterTitle} 这份没完成，下一轮重试", false)
+                        // 必须把具体原因打出来 —— 只写「这份没完成」等于没说，
+                        // 用户报「部分章节做不了」时根本无从查起。
+                        // r.message 里已经有「拉取失败 / 没解析到题目 / 一题都没答上」等分类。
+                        log(
+                            "[测验] ${job.chapterTitle} 这份没完成，下一轮重试" +
+                                "｜原因：${r.message.ifBlank { "未提供" }}" +
+                                "｜答题 ${r.answered}/${r.total}" +
+                                if (r.questionOutcomes.isNotEmpty()) {
+                                    "｜未命中 ${r.questionOutcomes.count { it.source == "未命中" }}/${r.questionOutcomes.size}"
+                                } else "",
+                            false
+                        )
                     }
                     if (r.needsHuman) pending++
                     results.add(r)

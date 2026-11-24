@@ -383,6 +383,55 @@ object GlyphRaster {
      */
     private const val BASE_TEXT_SIZE = 128f
 
+    /**
+     * 渲染用的位图 / 像素缓冲只分配一次，之后反复复用。
+     *
+     * ## 为什么必须复用（真机 OOM 崩溃）
+     *
+     * 原来每次 `render()` 都 `Bitmap.createBitmap(px, px, ARGB_8888)` +
+     * `IntArray(px * px)`，用完 `recycle()`。`px` 按字体行高算，思源黑体下约 208，
+     * 所以**一次渲染就是 173KB 位图 + 173KB 数组**。
+     *
+     * 而一道题要渲染「6 套参考字体 × 约 30 个候选字」≈ 180 次 → 单题 60MB+ 的
+     * 反复申请/释放。大块内存来回切碎堆，最终崩溃日志是：
+     *
+     * ```
+     * OutOfMemoryError: Failed to allocate a 88 byte allocation with 10897248 free bytes
+     *   and 10MB until OOM ... failed due to fragmentation
+     *   (largest possible contiguous allocation 0 bytes)
+     * ```
+     *
+     * 「还剩 10MB 却连 88 字节都分配不了、最大连续块为 0」就是碎片化的典型特征，
+     * 不是真的用完了。复用固定大小的缓冲后，堆不再被切碎，峰值也降到几百 KB。
+     *
+     * 锁：多份 QuizEngine（巡检 / 排队刷课）可能并发解码，共用同一块缓冲必须串行。
+     */
+    private val BUFFER_LOCK = Any()
+    private var bufPx = -1
+    private var bufBmp: Bitmap? = null
+    private var bufPixels: IntArray? = null
+
+    /** 取一块 `px × px` 的 ARGB_8888 位图；边长变了才重新分配 */
+    private fun bufferFor(px: Int): Bitmap? {
+        val cur = bufBmp
+        if (bufPx == px && cur != null && !cur.isRecycled) return cur
+        runCatching { cur?.recycle() }
+        val fresh = runCatching { Bitmap.createBitmap(px, px, Bitmap.Config.ARGB_8888) }.getOrNull()
+        bufBmp = fresh
+        bufPx = px
+        bufPixels = null   // 边长变了，像素数组也要重来
+        return fresh
+    }
+
+    /** 取长度 `px * px` 的像素缓冲 */
+    private fun pixelsFor(px: Int): IntArray? {
+        val cur = bufPixels
+        if (cur != null && cur.size == px * px) return cur
+        val fresh = runCatching { IntArray(px * px) }.getOrNull()
+        bufPixels = fresh
+        return fresh
+    }
+
     fun render(tf: Typeface, ch: Char, size: Int): FloatArray? {
         // 画布边长按字体的实际行高算，保证字形**完整**落在画布内。
         //
@@ -409,9 +458,10 @@ object GlyphRaster {
         // rgb 全 0；而 `drawText` 在 ALPHA_8 上的抗锯齿质量在不同 ROM / Skia 版本上
         // 不一致（有的直接把覆盖率丢掉）。ARGB_8888 是唯一行为完全可控的配置：
         // 黑字画在透明底上，取 alpha 通道就是纯覆盖率。
-        val bmp = runCatching { Bitmap.createBitmap(px, px, Bitmap.Config.ARGB_8888) }.getOrNull()
-            ?: return null
-        try {
+        // 复用缓冲 + 串行化，见 [bufferFor] 上的说明（旧实现每次新建 173KB 位图导致堆碎片化 OOM）
+        synchronized(BUFFER_LOCK) {
+            val bmp = bufferFor(px) ?: return null
+            val pixels = pixelsFor(px) ?: return null
             val canvas = Canvas(bmp)
             canvas.drawColor(Color.TRANSPARENT, PorterDuff.Mode.CLEAR)
             val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -425,7 +475,6 @@ object GlyphRaster {
             val baseline = px / 2f - (fm.ascent + fm.descent) / 2f
             canvas.drawText(ch.toString(), px / 2f, baseline, paint)
 
-            val pixels = IntArray(px * px)
             bmp.getPixels(pixels, 0, px, 0, 0, px, px)
 
             // 1) 找墨迹包围盒（alpha > 0），顺带判断是不是空字形
@@ -484,8 +533,6 @@ object GlyphRaster {
             if (norm <= 1e-6f) return null
             for (i in out.indices) out[i] /= norm
             return out
-        } finally {
-            bmp.recycle()
         }
     }
 }

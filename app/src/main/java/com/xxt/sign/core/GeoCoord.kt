@@ -67,6 +67,43 @@ object GeoCoord {
         return 2 * EARTH_R * asin(sqrt(s.coerceIn(0.0, 1.0)))
     }
 
+    // ------------------------------------------------------------ BD-09
+
+    private val X_PI = kotlin.math.PI * 3000.0 / 180.0
+
+    /** BD-09（百度）→ GCJ-02 */
+    fun bd09ToGcj(lat: Double, lon: Double): LatLng {
+        val x = lon - 0.0065
+        val y = lat - 0.006
+        val z = sqrt(x * x + y * y) - 0.00002 * sin(y * X_PI)
+        val theta = kotlin.math.atan2(y, x) - 0.000003 * cos(x * X_PI)
+        return LatLng(z * sin(theta), z * cos(theta))
+    }
+
+    /** GCJ-02 → BD-09（百度） */
+    fun gcjToBd09(lat: Double, lon: Double): LatLng {
+        val z = sqrt(lon * lon + lat * lat) + 0.00002 * sin(lat * X_PI)
+        val theta = kotlin.math.atan2(lat, lon) + 0.000003 * cos(lon * X_PI)
+        return LatLng(z * sin(theta) + 0.006, z * cos(theta) + 0.0065)
+    }
+
+    /**
+     * 把「用户输入坐标所用的坐标系」换算成学习通使用的 **GCJ-02**。
+     *
+     * - [Settings.COORD_NONE] / [Settings.COORD_GCJ02]：原样返回（不转换）
+     * - [Settings.COORD_WGS84]：做一次 WGS-84 → GCJ-02
+     * - [Settings.COORD_BD09]：做一次 BD-09 → GCJ-02
+     *
+     * **默认 [Settings.COORD_NONE]，也就是完全不纠偏** —— 因为虚拟定位 App 自己可以选
+     * 注入哪种坐标系（WGS-84 / GCJ-02 / BD-09），App 无法可靠推断，猜错就是多转一次
+     * （约 531 米；转两次约 1063 米，正是真机出现过「实际差 100 米却提示超出 1015 米」的成因）。
+     */
+    fun toGcj(lat: Double, lon: Double, source: String): LatLng = when (source) {
+        Settings.COORD_WGS84 -> wgsToGcj(lat, lon)
+        Settings.COORD_BD09 -> bd09ToGcj(lat, lon)
+        else -> LatLng(lat, lon)
+    }
+
     private const val PI = 3.141592653589793
     private const val A = 6378245.0
     private const val EE = 0.00669342162296594323
